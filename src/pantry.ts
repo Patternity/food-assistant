@@ -25,16 +25,20 @@ export type PantryItem = {
 /** Prompt block describing what the user has / hasn't at home. "" if empty. */
 export function pantryDirective(pantry?: PantryItem[]): string {
   const items = pantry ?? [];
-  const available = items.filter((p) => p.name && (p.state ?? "available") === "available");
+  const avail = items.filter((p) => p.name && (p.state ?? "available") === "available");
+  const confirmed = avail.filter((p) => p.source === "user_confirmed");
+  const observed = avail.filter((p) => p.source !== "user_confirmed");
   const missing = items.filter((p) => p.name && p.state === "missing");
-  if (!available.length && !missing.length) return "";
-  const lines: string[] = ["", "", "CONFIRMED PANTRY (stated by the user this session):"];
-  if (available.length) lines.push(`- at home: ${available.map((p) => p.name).join(", ")}`);
+  if (!avail.length && !missing.length) return "";
+  const lines: string[] = ["", "", "PANTRY (what the user has at home):"];
+  if (confirmed.length) lines.push(`- confirmed at home (high confidence): ${confirmed.map((p) => p.name).join(", ")}`);
+  if (observed.length) lines.push(`- recently bought, probably still at home (lower confidence, may have been used): ${observed.map((p) => p.name).join(", ")}`);
   if (missing.length) lines.push(`- used up / not at home: ${missing.map((p) => p.name).join(", ")}`);
   lines.push(
-    "Treat the at-home items as on hand (high confidence): use them in dishes and",
-    "list them under likely_at_home; never put them on the buy list. Do not assume",
-    "the used-up items are available."
+    "Use at-home items in dishes and list them under likely_at_home; never put",
+    "them on the buy list. Confirmed items are reliable; for the recently-bought",
+    "ones speak with a little more caution (they may already be used). Do not",
+    "assume the used-up items are available."
   );
   return lines.join("\n");
 }

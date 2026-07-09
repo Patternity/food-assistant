@@ -97,12 +97,14 @@ export async function analyzeBasketFlow(req: Request, res: Response): Promise<vo
     // 2) evaluate the basket (type, verdict, dish, buy-list)
     const analysis = await analyzeBasket(items, { language, glossary, pantry });
 
-    // 3) persist: record the purchase (history) and anything the model learned
+    // 3) persist: record the purchase (history), sync bought items into the
+    //    pantry as observed evidence, and store anything the model learned.
     purchasesRepo.add(
       userId,
       { source_type: imageDataUrl ? "image" : "text", basket_kind: analysis.basket_kind, raw_text: text },
       items
     );
+    pantryRepo.observeFromPurchase(userId, items);
     persistLearned(userId, analysis);
 
     // 4) MOCK ad, chosen after the answer, gated by user exclusions

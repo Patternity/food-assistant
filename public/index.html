@@ -37,6 +37,7 @@
     a.fix { color:var(--accent); text-decoration:none; border-bottom:1px dashed var(--accent); }
     .pantry { font-size:13px; margin-bottom:8px; color:var(--ink); }
     .chip { display:inline-block; background:var(--card); border:1px solid var(--line); border-radius:999px; padding:2px 8px; margin:2px 2px 0 0; }
+    .chip.observed { opacity:.6; border-style:dashed; }
     .chip a.rm { color:var(--muted); text-decoration:none; margin-left:2px; }
     /* Sponsored block: visually separated from neutral advice, easy to ignore. */
     .ad { margin-top:10px; padding:10px 12px; border:1px dashed var(--line); border-radius:10px; background:transparent; }
@@ -115,8 +116,12 @@
       const have = (pantry || []).filter(p => p.state !== 'missing');
       if (!have.length) { box.hidden = true; return; }
       box.hidden = false;
-      box.innerHTML = '<b>🏠 Дома есть:</b> ' + have.map(p =>
-        '<span class="chip">' + esc(p.name) + ' <a href="#" class="rm" data-n="' + esc(p.name) + '">×</a></span>').join(' ');
+      box.innerHTML = '<b>🏠 Дома есть:</b> ' + have.map(p => {
+        const observed = p.source !== 'user_confirmed';
+        const title = observed ? ' title="недавно куплено — вероятно ещё есть"' : '';
+        return '<span class="chip' + (observed ? ' observed' : '') + '"' + title + '>' + esc(p.name) +
+          ' <a href="#" class="rm" data-n="' + esc(p.name) + '">×</a></span>';
+      }).join(' ');
       box.querySelectorAll('a.rm').forEach(a => a.onclick = async (ev) => {
         ev.preventDefault();
         try { const r = await post('/api/feedback', { pantryRemove: a.dataset.n }); applyState(r.state); }

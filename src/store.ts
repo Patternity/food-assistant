@@ -133,6 +133,31 @@ export const pantryRepo = {
     });
   },
 
+  /**
+   * Record bought items as pantry evidence: "observed" (probably at home now),
+   * low confidence. Crucially, this must NOT overwrite a `user_confirmed` row —
+   * what the user explicitly said (including "used up") outranks a purchase.
+   * (Perishables aren't aged yet; that comes with the cadence/spoilage step.)
+   */
+  observeFromPurchase(userId: number, items: Item[]): void {
+    const stmt = db.prepare(
+      `INSERT INTO pantry (user_id, name, category, state, source, confidence, updated_at)
+       VALUES (@user_id, @name, @category, 'available', 'observed', 'low', @updated_at)
+       ON CONFLICT(user_id, name) DO UPDATE SET
+         category = excluded.category,
+         state = 'available',
+         updated_at = excluded.updated_at
+       WHERE pantry.source != 'user_confirmed'`
+    );
+    const tx = db.transaction(() => {
+      for (const it of items) {
+        if (!it?.name?.trim()) continue;
+        stmt.run({ user_id: userId, name: it.name.trim(), category: it.category ?? null, updated_at: now() });
+      }
+    });
+    tx();
+  },
+
   /** Items currently believed to be at home (state = available). */
   list(userId: number): PantryItem[] {
     return db
