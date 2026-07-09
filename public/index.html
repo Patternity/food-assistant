@@ -38,6 +38,7 @@
     .pantry { font-size:13px; margin-bottom:8px; color:var(--ink); }
     .chip { display:inline-block; background:var(--card); border:1px solid var(--line); border-radius:999px; padding:2px 8px; margin:2px 2px 0 0; }
     .chip.observed { opacity:.6; border-style:dashed; }
+    .restock { color:var(--muted); font-size:12px; }
     .chip a.rm { color:var(--muted); text-decoration:none; margin-left:2px; }
     /* Sponsored block: visually separated from neutral advice, easy to ignore. */
     .ad { margin-top:10px; padding:10px 12px; border:1px dashed var(--line); border-radius:10px; background:transparent; }
@@ -56,6 +57,7 @@
     <div id="feed"></div>
     <div class="composer">
       <div id="pantry" class="pantry" hidden></div>
+      <div id="restock" class="pantry restock" hidden></div>
       <textarea id="text" placeholder="Paste a basket as text, or type a question like 'what should I cook tonight?'"></textarea>
       <div class="controls">
         <input id="file" type="file" accept="image/*" hidden />
@@ -103,6 +105,14 @@
       if (Array.isArray(state.glossary)) glossary = state.glossary;
       if (Array.isArray(state.pantry)) pantry = state.pantry;
       renderPantry();
+      renderRestock(state.restock);
+    }
+    function renderRestock(hints) {
+      const box = document.getElementById('restock');
+      if (!Array.isArray(hints) || !hints.length) { box.hidden = true; return; }
+      box.hidden = false;
+      box.innerHTML = '🔁 Возможно, заканчивается: ' + hints.map(h =>
+        esc(h.name) + ' <span title="берёшь примерно раз в ' + h.cadence_days + ' дн., последний раз ' + h.days_since_last + ' дн. назад">(~' + h.cadence_days + ' дн.)</span>').join(', ');
     }
     // Show a brief toast for what the model just learned (persisted server-side).
     function toastLearned(glossaryLearned, pantryLearned) {

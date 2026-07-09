@@ -161,7 +161,7 @@ export const pantryRepo = {
   /** Items currently believed to be at home (state = available). */
   list(userId: number): PantryItem[] {
     return db
-      .prepare(`SELECT name, category, state, source, confidence FROM pantry WHERE user_id = ? AND state = 'available' ORDER BY updated_at DESC`)
+      .prepare(`SELECT name, category, state, source, confidence, updated_at FROM pantry WHERE user_id = ? AND state = 'available' ORDER BY updated_at DESC`)
       .all(userId) as PantryItem[];
   },
 
@@ -171,6 +171,63 @@ export const pantryRepo = {
 };
 
 // --- Glossary (personal term -> canonical product) --------------------------
+
+// --- Purchase cadence (how often the user rebuys an item) -------------------
+
+export type RestockHint = { name: string; cadence_days: number; days_since_last: number };
+
+function median(xs: number[]): number {
+  if (!xs.length) return 0;
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+const DAY_MS = 86_400_000;
+
+export const itemStatsRepo = {
+  /**
+   * Items that may be due to restock, inferred from purchase history:
+   * cadence = median interval between purchases. Deterministic; computed in code,
+   * not by the LLM. Gated by minPurchases (default 3) — with fewer buys the
+   * rhythm isn't reliable, so we stay quiet (per the design).
+   */
+  dueForRestock(
+    userId: number,
+    { minPurchases = 3, factor = 0.85 }: { minPurchases?: number; factor?: number } = {}
+  ): RestockHint[] {
+    const rows = db
+      .prepare(
+        `SELECT pi.name AS name, p.ts AS ts
+         FROM purchase_items pi JOIN purchases p ON p.id = pi.purchase_id
+         WHERE pi.user_id = ? ORDER BY p.ts ASC`
+      )
+      .all(userId) as Array<{ name: string; ts: string }>;
+
+    // Group by a normalized name so slight label variations still line up.
+    const groups = new Map<string, { name: string; ts: number[] }>();
+    for (const r of rows) {
+      const key = r.name.toLowerCase().replace(/\s+/g, " ").trim();
+      if (!groups.has(key)) groups.set(key, { name: r.name, ts: [] });
+      groups.get(key)!.ts.push(Date.parse(r.ts));
+    }
+
+    const nowMs = Date.now();
+    const out: RestockHint[] = [];
+    for (const g of groups.values()) {
+      const ts = g.ts.sort((a, b) => a - b);
+      if (ts.length < minPurchases) continue; // need enough buys for a reliable rhythm
+      const intervals: number[] = [];
+      for (let i = 1; i < ts.length; i++) intervals.push((ts[i] - ts[i - 1]) / DAY_MS);
+      const cadence = median(intervals);
+      const daysSinceLast = (nowMs - ts[ts.length - 1]) / DAY_MS;
+      if (cadence > 0 && daysSinceLast >= cadence * factor) {
+        out.push({ name: g.name, cadence_days: Math.round(cadence), days_since_last: Math.round(daysSinceLast) });
+      }
+    }
+    return out.sort((a, b) => b.days_since_last / b.cadence_days - a.days_since_last / a.cadence_days);
+  },
+};
 
 export const glossaryRepo = {
   upsert(userId: number, entry: GlossaryEntry): void {

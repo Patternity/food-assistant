@@ -13,7 +13,7 @@ import { matchOffer, type AdContext, type AdExclusions } from "../services/adSer
 import { detectLanguage } from "../lang.js";
 import type { GlossaryEntry } from "../glossary.js";
 import type { PantryItem } from "../pantry.js";
-import { DEFAULT_USER_ID, glossaryRepo, pantryRepo, purchasesRepo } from "../store.js";
+import { DEFAULT_USER_ID, glossaryRepo, itemStatsRepo, pantryRepo, purchasesRepo } from "../store.js";
 
 // Controllers own the use-case flow: validate input, load prerequisites,
 // sequence domain primitives, and map failures to user-facing errors. Services
@@ -31,7 +31,11 @@ function userIdOf(req: Request): number {
 
 /** Current durable memory the client renders. */
 function stateOf(userId: number) {
-  return { pantry: pantryRepo.list(userId), glossary: glossaryRepo.list(userId) };
+  return {
+    pantry: pantryRepo.list(userId),
+    glossary: glossaryRepo.list(userId),
+    restock: itemStatsRepo.dueForRestock(userId),
+  };
 }
 
 /** Persist whatever the model learned this turn (stated by the user). */
@@ -145,13 +149,14 @@ export async function askFlow(req: Request, res: Response): Promise<void> {
   const userId = userIdOf(req);
   const glossary = glossaryRepo.list(userId);
   const pantry = pantryRepo.list(userId);
+  const restock = itemStatsRepo.dueForRestock(userId);
   const itemCats = (items ?? []).map((i) => i.category);
   const itemNames = (items ?? []).map((i) => i.name);
   const language = detectLanguage(question);
 
   try {
     if (intent === "buy") {
-      const result = await suggestBuy({ items, question, language, glossary, pantry });
+      const result = await suggestBuy({ items, question, language, glossary, pantry, restock });
       const sponsored = attachSponsored(
         { categories: itemCats, terms: tokens(result.for_dish, result.buy.join(" "), ...itemNames) },
         exclusions,
@@ -159,7 +164,7 @@ export async function askFlow(req: Request, res: Response): Promise<void> {
       );
       res.json({ intent, result, sponsored, state: stateOf(userId) });
     } else {
-      const result = await suggestCook({ items, question, language, glossary, pantry });
+      const result = await suggestCook({ items, question, language, glossary, pantry, restock });
       const dishNames = result.dishes?.map((d) => d.name).join(" ");
       const sponsored = attachSponsored(
         { categories: itemCats, terms: tokens(dishNames, ...itemNames) },
@@ -200,10 +205,11 @@ export async function chatFlow(req: Request, res: Response): Promise<void> {
   const userId = userIdOf(req);
   const glossary = glossaryRepo.list(userId);
   const pantry = pantryRepo.list(userId);
+  const restock = itemStatsRepo.dueForRestock(userId);
   const language = detectLanguage(message);
 
   try {
-    const result = await converse({ items, history, message, language, glossary, pantry });
+    const result = await converse({ items, history, message, language, glossary, pantry, restock });
     persistLearned(userId, result);
     const dishNames = result.dishes?.map((d) => d.name).join(" ") ?? "";
     const sponsored = attachSponsored(

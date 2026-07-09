@@ -4,12 +4,13 @@ import { loadPrompt, persona } from "../prompts.js";
 import { languageDirective, type Lang } from "../lang.js";
 import { glossaryDirective, glossaryLearnHint, type GlossaryEntry } from "../glossary.js";
 import { pantryDirective, pantryLearnHint, type PantryItem } from "../pantry.js";
+import { restockDirective, type RestockHint } from "../restock.js";
 
-type SystemOpts = { language?: Lang; glossary?: GlossaryEntry[]; pantry?: PantryItem[] };
+type SystemOpts = { language?: Lang; glossary?: GlossaryEntry[]; pantry?: PantryItem[]; restock?: RestockHint[] };
 
 // Build the system message for a task: persona + task prompt + language rule +
-// personal glossary (resolve the user's shorthand) + confirmed pantry (what the
-// user has at home) — each also keeps learning from what the user states.
+// personal glossary (resolve the user's shorthand) + pantry (what the user has
+// at home) + restock signals — each also keeps learning from what the user states.
 function system(task: string, opts: SystemOpts = {}): string {
   let s = `${persona()}\n\n${loadPrompt(task)}`;
   if (opts.language) s += languageDirective(opts.language);
@@ -18,6 +19,7 @@ function system(task: string, opts: SystemOpts = {}): string {
   // suppress the learn hint, or the memory stops growing.
   s += glossaryDirective(opts.glossary) + glossaryLearnHint();
   s += pantryDirective(opts.pantry) + pantryLearnHint();
+  s += restockDirective(opts.restock);
   return s;
 }
 
@@ -123,10 +125,11 @@ export async function suggestCook(input: {
   language?: Lang;
   glossary?: GlossaryEntry[];
   pantry?: PantryItem[];
+  restock?: RestockHint[];
 }): Promise<CookSuggestion> {
   const ctx = contextBlock(input.items, input.question);
   const messages: ChatMessage[] = [
-    { role: "system", content: system("suggest-cook", { language: input.language, glossary: input.glossary, pantry: input.pantry }) },
+    { role: "system", content: system("suggest-cook", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock }) },
     { role: "user", content: ctx },
   ];
   return provider().completeJSON<CookSuggestion>(messages, { temperature: 0.5 });
@@ -139,10 +142,11 @@ export async function suggestBuy(input: {
   language?: Lang;
   glossary?: GlossaryEntry[];
   pantry?: PantryItem[];
+  restock?: RestockHint[];
 }): Promise<BuySuggestion> {
   const ctx = contextBlock(input.items, input.question);
   const messages: ChatMessage[] = [
-    { role: "system", content: system("suggest-buy", { language: input.language, glossary: input.glossary, pantry: input.pantry }) },
+    { role: "system", content: system("suggest-buy", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock }) },
     { role: "user", content: ctx },
   ];
   return provider().completeJSON<BuySuggestion>(messages, { temperature: 0.5 });
@@ -160,6 +164,7 @@ export async function converse(input: {
   language?: Lang;
   glossary?: GlossaryEntry[];
   pantry?: PantryItem[];
+  restock?: RestockHint[];
 }): Promise<ConverseResult> {
   const history = (input.history ?? [])
     .slice(-8)
@@ -173,7 +178,7 @@ export async function converse(input: {
     .filter(Boolean)
     .join("\n\n");
   const messages: ChatMessage[] = [
-    { role: "system", content: system("converse", { language: input.language, glossary: input.glossary, pantry: input.pantry }) },
+    { role: "system", content: system("converse", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock }) },
     { role: "user", content: ctx },
   ];
   return provider().completeJSON<ConverseResult>(messages, { temperature: 0.4 });
