@@ -7,3 +7,5 @@ dist/
 data/uploads/
 *.sqlite
 *.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm

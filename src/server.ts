@@ -2,7 +2,7 @@ import "dotenv/config";
 import express from "express";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { analyzeBasketFlow, askFlow, chatFlow } from "./controllers/assistantController.js";
+import { analyzeBasketFlow, askFlow, chatFlow, feedbackFlow, historyFlow, stateFlow } from "./controllers/assistantController.js";
 import { isConfigured } from "./services/assistantService.js";
 
 const app = express();
@@ -19,6 +19,9 @@ app.get("/api/health", (_req, res) => {
 app.post("/api/analyze", analyzeBasketFlow);
 app.post("/api/ask", askFlow);
 app.post("/api/chat", chatFlow);
+app.post("/api/feedback", feedbackFlow);
+app.get("/api/state", stateFlow);
+app.get("/api/history", historyFlow);
 
 const port = Number(process.env.PORT || 3000);
 app.listen(port, () => {

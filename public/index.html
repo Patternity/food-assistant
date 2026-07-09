@@ -90,52 +90,37 @@
     const adExclusions = JSON.parse(localStorage.getItem('adExclusions') || '{"categories":[],"brands":[],"retailers":[]}');
     function saveExclusions() { localStorage.setItem('adExclusions', JSON.stringify(adExclusions)); }
 
-    // Personal glossary (term -> canonical product), collected unobtrusively from
-    // what the user states/corrects. Persisted locally; sent with each request.
-    let glossary = JSON.parse(localStorage.getItem('glossary') || '[]');
-    function mergeGlossary(learned) {
-      if (!Array.isArray(learned) || !learned.length) return;
-      learned.forEach(e => {
-        if (!e || !e.term || !e.canonical) return;
-        const term = String(e.term).toLowerCase().trim();
-        const entry = { term, canonical: e.canonical, category: e.category, confidence: 'high', source: 'user_confirmed' };
-        const i = glossary.findIndex(g => g.term === term);
-        if (i >= 0) glossary[i] = entry; else glossary.push(entry);
-        toast('Запомнил: ' + term + ' → ' + e.canonical);
-      });
-      localStorage.setItem('glossary', JSON.stringify(glossary));
-    }
+    // Durable memory (pantry + glossary) is owned by the SERVER now. The client
+    // holds a local copy only for rendering; every response carries the fresh
+    // `state`, which we apply. No localStorage for these anymore.
+    let glossary = [];
+    let pantry = [];
     function toast(msg) { statusEl.textContent = msg; }
 
-    // Pantry ("what's at home"): accumulated from what the user states. The
-    // in-session slice of the durable pantry memory; sent with each request.
-    let pantry = JSON.parse(localStorage.getItem('pantry') || '[]');
-    function mergePantry(learned) {
-      if (!Array.isArray(learned) || !learned.length) return;
-      learned.forEach(e => {
-        if (!e || !e.name) return;
-        const name = String(e.name).trim();
-        const key = name.toLowerCase();
-        const entry = { name, category: e.category, state: e.state === 'missing' ? 'missing' : 'available', source: 'user_confirmed', confidence: 'high' };
-        const i = pantry.findIndex(p => p.name.toLowerCase() === key);
-        if (i >= 0) pantry[i] = entry; else pantry.push(entry);
-        toast(entry.state === 'missing' ? ('Отметил: закончилось — ' + name) : ('В кладовке: ' + name));
-      });
-      localStorage.setItem('pantry', JSON.stringify(pantry));
+    function applyState(state) {
+      if (!state) return;
+      if (Array.isArray(state.glossary)) glossary = state.glossary;
+      if (Array.isArray(state.pantry)) pantry = state.pantry;
       renderPantry();
     }
+    // Show a brief toast for what the model just learned (persisted server-side).
+    function toastLearned(glossaryLearned, pantryLearned) {
+      (glossaryLearned || []).forEach(e => e && e.term && toast('Запомнил: ' + e.term + ' → ' + e.canonical));
+      (pantryLearned || []).forEach(e => e && e.name && toast(e.state === 'missing'
+        ? ('Отметил: закончилось — ' + e.name) : ('В кладовке: ' + e.name)));
+    }
+
     function renderPantry() {
       const box = document.getElementById('pantry');
-      const have = pantry.filter(p => p.state !== 'missing');
+      const have = (pantry || []).filter(p => p.state !== 'missing');
       if (!have.length) { box.hidden = true; return; }
       box.hidden = false;
       box.innerHTML = '<b>🏠 Дома есть:</b> ' + have.map(p =>
         '<span class="chip">' + esc(p.name) + ' <a href="#" class="rm" data-n="' + esc(p.name) + '">×</a></span>').join(' ');
-      box.querySelectorAll('a.rm').forEach(a => a.onclick = (ev) => {
+      box.querySelectorAll('a.rm').forEach(a => a.onclick = async (ev) => {
         ev.preventDefault();
-        pantry = pantry.filter(p => p.name !== a.dataset.n);
-        localStorage.setItem('pantry', JSON.stringify(pantry));
-        renderPantry();
+        try { const r = await post('/api/feedback', { pantryRemove: a.dataset.n }); applyState(r.state); }
+        catch (e) { toast(e.message); }
       });
     }
 
@@ -214,11 +199,11 @@
       pushHistory('user', text || '[uploaded a basket image]');
       busy(true, 'Reading basket…');
       try {
-        const { items, analysis, sponsored } = await post('/api/analyze', { text, imageDataUrl, adExclusions, adSeen, glossary, pantry });
+        const { items, analysis, sponsored, state } = await post('/api/analyze', { text, imageDataUrl, adExclusions, adSeen });
         lastItems = items;           // start / replace the current basket
         history = [];                // fresh conversation for a new basket
-        mergeGlossary(analysis.glossary_learned);
-        mergePantry(analysis.pantry_learned);
+        toastLearned(analysis.glossary_learned, analysis.pantry_learned);
+        applyState(state);
         pushHistory('user', 'basket: ' + items.map(i => i.name).join(', '));
         pushHistory('assistant', analysis.verdict + ' Cook: ' + analysis.dish);
         const n = el('div');
@@ -231,15 +216,19 @@
           (analysis.questions && analysis.questions.length ? '<div class="row q">' + analysis.questions.map(esc).join('<br>') + '</div>' : '') +
           '<div class="row muted">Read (tap to correct): ' +
             items.map((i, idx) => '<a href="#" class="fix" data-i="' + idx + '">' + esc(i.name) + '</a>').join(', ') + '</div>';
-        // Tap a recognized item to correct it -> writes term -> canonical to the glossary.
-        n.querySelectorAll('a.fix').forEach(a => a.onclick = (ev) => {
+        // Tap a recognized item to correct it -> writes term -> canonical to the glossary (server).
+        n.querySelectorAll('a.fix').forEach(a => a.onclick = async (ev) => {
           ev.preventDefault();
           const it = lastItems[a.dataset.i];
           const corrected = prompt('This is actually…', it.name);
           if (corrected && corrected.trim() && corrected.trim() !== it.name) {
-            mergeGlossary([{ term: it.name, canonical: corrected.trim(), category: it.category }]);
-            it.name = corrected.trim();
-            a.textContent = corrected.trim();
+            try {
+              const r = await post('/api/feedback', { glossaryLearned: [{ term: it.name, canonical: corrected.trim(), category: it.category }] });
+              applyState(r.state);
+              toast('Запомнил: ' + it.name + ' → ' + corrected.trim());
+              it.name = corrected.trim();
+              a.textContent = corrected.trim();
+            } catch (e) { toast(e.message); }
           }
         });
         renderAd(sponsored, n);
@@ -255,7 +244,8 @@
       pushHistory('user', shown);
       busy(true);
       try {
-        const { result, sponsored } = await post('/api/ask', { question, intent, items: lastItems, adExclusions, adSeen, glossary, pantry });
+        const { result, sponsored, state } = await post('/api/ask', { question, intent, items: lastItems, adExclusions, adSeen });
+        applyState(state);
         pushHistory('assistant', result.reply);
         const n = renderResult(result);
         renderAd(sponsored, n);
@@ -272,9 +262,9 @@
       pushHistory('user', message);
       busy(true);
       try {
-        const { result, sponsored } = await post('/api/chat', { message, items: lastItems, history, adExclusions, adSeen, glossary, pantry });
-        mergeGlossary(result.glossary_learned);
-        mergePantry(result.pantry_learned);
+        const { result, sponsored, state } = await post('/api/chat', { message, items: lastItems, history, adExclusions, adSeen });
+        toastLearned(result.glossary_learned, result.pantry_learned);
+        applyState(state);
         pushHistory('assistant', result.reply);
         const n = renderResult(result);
         renderAd(sponsored, n);
@@ -308,7 +298,8 @@
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
     });
 
-    renderPantry();
+    // Load durable memory (pantry + glossary) from the server on startup.
+    fetch('/api/state').then(r=>r.json()).then(applyState).catch(()=>{});
     fetch('/api/health').then(r=>r.json()).then(h => { if (!h.configured) statusEl.innerHTML = '<span class="err">LLM not configured — set LLM_API_KEY in .env</span>'; });
   </script>
 </body>

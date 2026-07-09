@@ -13,10 +13,35 @@ import { matchOffer, type AdContext, type AdExclusions } from "../services/adSer
 import { detectLanguage } from "../lang.js";
 import type { GlossaryEntry } from "../glossary.js";
 import type { PantryItem } from "../pantry.js";
+import { DEFAULT_USER_ID, glossaryRepo, pantryRepo, purchasesRepo } from "../store.js";
 
 // Controllers own the use-case flow: validate input, load prerequisites,
 // sequence domain primitives, and map failures to user-facing errors. Services
 // stay as composable primitives (see assistantService.ts).
+//
+// The durable store (store.ts) is the source of truth for the pantry and the
+// glossary — the client no longer owns them. Each flow loads them as context,
+// and persists whatever the model learned this turn.
+
+// Single-user alpha; every row is still keyed by user_id for later multi-user.
+function userIdOf(req: Request): number {
+  const raw = Number(req.body?.userId);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_USER_ID;
+}
+
+/** Current durable memory the client renders. */
+function stateOf(userId: number) {
+  return { pantry: pantryRepo.list(userId), glossary: glossaryRepo.list(userId) };
+}
+
+/** Persist whatever the model learned this turn (stated by the user). */
+function persistLearned(
+  userId: number,
+  learned: { glossary_learned?: GlossaryEntry[]; pantry_learned?: PantryItem[] }
+): void {
+  for (const g of learned.glossary_learned ?? []) glossaryRepo.upsert(userId, g);
+  for (const p of learned.pantry_learned ?? []) pantryRepo.upsert(userId, p);
+}
 
 // Trust firewall: the sponsored offer (MOCK) is picked only AFTER the neutral
 // answer exists, from that answer plus the user's exclusions. It never feeds
@@ -58,8 +83,9 @@ export async function analyzeBasketFlow(req: Request, res: Response): Promise<vo
   // Reply in the user's language. With an image and little/no text, default
   // (Russian) applies; any typed text overrides it.
   const language = detectLanguage(text);
-  const glossary: GlossaryEntry[] | undefined = req.body?.glossary;
-  const pantry: PantryItem[] | undefined = req.body?.pantry;
+  const userId = userIdOf(req);
+  const glossary = glossaryRepo.list(userId);
+  const pantry = pantryRepo.list(userId);
 
   try {
     // 1) extract a product list from the image and/or text
@@ -71,7 +97,15 @@ export async function analyzeBasketFlow(req: Request, res: Response): Promise<vo
     // 2) evaluate the basket (type, verdict, dish, buy-list)
     const analysis = await analyzeBasket(items, { language, glossary, pantry });
 
-    // 3) MOCK ad, chosen after the answer, gated by user exclusions
+    // 3) persist: record the purchase (history) and anything the model learned
+    purchasesRepo.add(
+      userId,
+      { source_type: imageDataUrl ? "image" : "text", basket_kind: analysis.basket_kind, raw_text: text },
+      items
+    );
+    persistLearned(userId, analysis);
+
+    // 4) MOCK ad, chosen after the answer, gated by user exclusions
     const exclusions: AdExclusions | undefined = req.body?.adExclusions;
     const seen: string[] | undefined = req.body?.adSeen;
     const sponsored = attachSponsored(
@@ -83,7 +117,7 @@ export async function analyzeBasketFlow(req: Request, res: Response): Promise<vo
       seen
     );
 
-    res.json({ items, analysis, sponsored });
+    res.json({ items, analysis, sponsored, state: stateOf(userId) });
   } catch (err) {
     fail(res, err);
   }
@@ -106,8 +140,9 @@ export async function askFlow(req: Request, res: Response): Promise<void> {
 
   const exclusions: AdExclusions | undefined = req.body?.adExclusions;
   const seen: string[] | undefined = req.body?.adSeen;
-  const glossary: GlossaryEntry[] | undefined = req.body?.glossary;
-  const pantry: PantryItem[] | undefined = req.body?.pantry;
+  const userId = userIdOf(req);
+  const glossary = glossaryRepo.list(userId);
+  const pantry = pantryRepo.list(userId);
   const itemCats = (items ?? []).map((i) => i.category);
   const itemNames = (items ?? []).map((i) => i.name);
   const language = detectLanguage(question);
@@ -120,7 +155,7 @@ export async function askFlow(req: Request, res: Response): Promise<void> {
         exclusions,
         seen
       );
-      res.json({ intent, result, sponsored });
+      res.json({ intent, result, sponsored, state: stateOf(userId) });
     } else {
       const result = await suggestCook({ items, question, language, glossary, pantry });
       const dishNames = result.dishes?.map((d) => d.name).join(" ");
@@ -129,7 +164,7 @@ export async function askFlow(req: Request, res: Response): Promise<void> {
         exclusions,
         seen
       );
-      res.json({ intent: "cook", result, sponsored });
+      res.json({ intent: "cook", result, sponsored, state: stateOf(userId) });
     }
   } catch (err) {
     fail(res, err);
@@ -160,12 +195,14 @@ export async function chatFlow(req: Request, res: Response): Promise<void> {
 
   const exclusions: AdExclusions | undefined = req.body?.adExclusions;
   const seen: string[] | undefined = req.body?.adSeen;
-  const glossary: GlossaryEntry[] | undefined = req.body?.glossary;
-  const pantry: PantryItem[] | undefined = req.body?.pantry;
+  const userId = userIdOf(req);
+  const glossary = glossaryRepo.list(userId);
+  const pantry = pantryRepo.list(userId);
   const language = detectLanguage(message);
 
   try {
     const result = await converse({ items, history, message, language, glossary, pantry });
+    persistLearned(userId, result);
     const dishNames = result.dishes?.map((d) => d.name).join(" ") ?? "";
     const sponsored = attachSponsored(
       {
@@ -175,10 +212,35 @@ export async function chatFlow(req: Request, res: Response): Promise<void> {
       exclusions,
       seen
     );
-    res.json({ result, sponsored });
+    res.json({ result, sponsored, state: stateOf(userId) });
   } catch (err) {
     fail(res, err);
   }
+}
+
+/** GET /api/state — the durable memory (pantry + glossary) the client renders. */
+export function stateFlow(req: Request, res: Response): void {
+  res.json(stateOf(userIdOf(req)));
+}
+
+/** GET /api/history — recent purchases (basket history). */
+export function historyFlow(req: Request, res: Response): void {
+  res.json({ purchases: purchasesRepo.recent(userIdOf(req)) });
+}
+
+/**
+ * POST /api/feedback — direct user edits to durable memory: correct a product
+ * (glossary), confirm/remove a pantry item. Returns the updated state.
+ */
+export function feedbackFlow(req: Request, res: Response): void {
+  const userId = userIdOf(req);
+  persistLearned(userId, {
+    glossary_learned: Array.isArray(req.body?.glossaryLearned) ? req.body.glossaryLearned : undefined,
+    pantry_learned: Array.isArray(req.body?.pantryLearned) ? req.body.pantryLearned : undefined,
+  });
+  const remove: string | undefined = req.body?.pantryRemove;
+  if (remove) pantryRepo.remove(userId, remove);
+  res.json({ state: stateOf(userId) });
 }
 
 // Lightweight intent routing lives in the controller: it decides which domain
