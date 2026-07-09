@@ -86,6 +86,7 @@ export type ConverseResult = {
   questions?: string[];
   glossary_learned?: GlossaryEntry[];
   pantry_learned?: PantryItem[];
+  recipe_learned?: Recipe;
 };
 
 const provider = () => getProvider();
@@ -124,19 +125,6 @@ export async function analyzeBasket(
     { role: "user", content: `Items:\n${JSON.stringify(items, null, 2)}` },
   ];
   return provider().completeJSON<BasketAnalysis>(messages, { temperature: 0.4 });
-}
-
-/** Parse a free-text description of a personal recipe into structure. */
-export async function parseRecipe(input: { text: string; language?: Lang }): Promise<Recipe> {
-  // Recipe parsing doesn't need the memory learn-hints, so build a lean system
-  // message (persona + task + language) rather than the full context stack.
-  let sys = `${persona()}\n\n${loadPrompt("parse-recipe")}`;
-  if (input.language) sys += languageDirective(input.language);
-  const messages: ChatMessage[] = [
-    { role: "system", content: sys },
-    { role: "user", content: input.text.trim() },
-  ];
-  return provider().completeJSON<Recipe>(messages, { temperature: 0.2 });
 }
 
 /** Suggest what to cook from a (recent) item list and a free-text question. */

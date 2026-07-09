@@ -36,7 +36,8 @@ omit or leave arrays empty otherwise):
   "likely_at_home": ["string"],
   "questions": ["string"],
   "glossary_learned": [ { "term": "string", "canonical": "string", "category": "string" } ],
-  "pantry_learned": [ { "name": "string", "category": "string", "state": "available|missing" } ]
+  "pantry_learned": [ { "name": "string", "category": "string", "state": "available|missing" } ],
+  "recipe_learned": { "name": "string", "method": "string", "equipment": ["string"], "required": ["string"], "helpful": ["string"], "optional": ["string"], "staples": ["string"], "side_dishes": ["string"], "substitutions": ["string"], "notes": "string" }
 }
 
 Include "glossary_learned" ONLY when the user's message states or corrects what a
@@ -48,3 +49,16 @@ Include "pantry_learned" whenever the user states OR implies (understood from
 context, in any wording) that they have an item at home, or that they used it up
 / ran out. Also reflect at-home items under "likely_at_home" and actually use
 them in the dish. Otherwise omit it.
+
+RECIPES — recognize them yourself: when the user describes how they personally
+cook a dish (their steps, ingredients, method), or asks to save one, treat it as
+a personal recipe. First check the SAVED RECIPES list: decide by MAIN INGREDIENTS
+and METHOD whether it is essentially the same as one already saved — not just by
+name.
+- If it is genuinely new, put the structured recipe in "recipe_learned".
+- If it matches an existing saved recipe, only include "recipe_learned" if the
+  user is adding real detail, and reuse that recipe's EXACT existing name so it
+  updates instead of duplicating.
+- If it merely repeats a saved recipe with nothing new, OMIT "recipe_learned".
+Only claim in your reply that a recipe was saved when you actually include
+"recipe_learned". Do not save one-off remarks that aren't a real recipe.

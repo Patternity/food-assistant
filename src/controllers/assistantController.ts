@@ -4,7 +4,6 @@ import {
   converse,
   extractItems,
   isConfigured,
-  parseRecipe,
   suggestBuy,
   suggestCook,
   type Item,
@@ -217,6 +216,9 @@ export async function chatFlow(req: Request, res: Response): Promise<void> {
   try {
     const result = await converse({ items, history, message, language, glossary, pantry, restock, recipes });
     persistLearned(userId, result);
+    // The model recognizes a recipe on its own (no button) and dedupes against
+    // saved ones; persist it when present. recipesRepo.save upserts by name.
+    if (result.recipe_learned?.name?.trim()) recipesRepo.save(userId, result.recipe_learned, message);
     const dishNames = result.dishes?.map((d) => d.name).join(" ") ?? "";
     const sponsored = attachSponsored(
       {
@@ -227,32 +229,6 @@ export async function chatFlow(req: Request, res: Response): Promise<void> {
       seen
     );
     res.json({ result, sponsored, state: stateOf(userId) });
-  } catch (err) {
-    fail(res, err);
-  }
-}
-
-/**
- * POST /api/recipe — save a personal recipe described in free text. Parses it to
- * structure, stores it, and returns it plus the updated state.
- */
-export async function recipeFlow(req: Request, res: Response): Promise<void> {
-  if (!ensureConfigured(res)) return;
-  const text: string | undefined = req.body?.text;
-  if (!text?.trim()) {
-    res.status(400).json({ error: "Describe the recipe in a few words." });
-    return;
-  }
-  const userId = userIdOf(req);
-  const language = detectLanguage(text);
-  try {
-    const recipe = await parseRecipe({ text, language });
-    if (!recipe?.name?.trim()) {
-      res.status(422).json({ error: "Couldn't read a recipe from that. Try describing the dish and its ingredients." });
-      return;
-    }
-    recipesRepo.save(userId, recipe, text);
-    res.json({ recipe, state: stateOf(userId) });
   } catch (err) {
     fail(res, err);
   }

@@ -69,7 +69,6 @@
         <button id="analyze" class="quick">Check basket</button>
         <button class="quick" data-intent="cook">What can I cook?</button>
         <button class="quick" data-intent="buy">What to buy?</button>
-        <button id="recipe" class="quick">★ Save recipe</button>
       </div>
       <p class="muted" id="status">Type or attach an image, then Send (Enter). Shift+Enter for a new line.</p>
     </div>
@@ -296,29 +295,11 @@
       try {
         const { result, sponsored, state } = await post('/api/chat', { message, items: lastItems, history, adExclusions, adSeen });
         toastLearned(result.glossary_learned, result.pantry_learned);
+        if (result.recipe_learned && result.recipe_learned.name) toast('★ Сохранил рецепт: ' + result.recipe_learned.name);
         applyState(state);
         pushHistory('assistant', result.reply);
         const n = renderResult(result);
         renderAd(sponsored, n);
-        addBot(n);
-        textEl.value='';
-      } catch (e) { addBot(el('div','err', esc(e.message))); }
-      busy(false);
-    }
-
-    // Save a personal recipe described in free text.
-    async function runRecipe(text) {
-      addUser('★ ' + text);
-      busy(true, 'Saving recipe…');
-      try {
-        const { recipe, state } = await post('/api/recipe', { text });
-        applyState(state);
-        const n = el('div');
-        const line = (label, arr) => (arr && arr.length) ? '<div class="row"><b>' + label + ':</b> ' + arr.map(esc).join(', ') + '</div>' : '';
-        n.innerHTML = '<div class="row">★ Сохранил рецепт: <b>' + esc(recipe.name) + '</b></div>' +
-          line('required', recipe.required) + line('helpful', recipe.helpful) + line('optional', recipe.optional) +
-          line('equipment', recipe.equipment) + line('side dishes', recipe.side_dishes) + line('substitutions', recipe.substitutions) +
-          (recipe.notes ? '<div class="row muted">' + esc(recipe.notes) + '</div>' : '');
         addBot(n);
         textEl.value='';
       } catch (e) { addBot(el('div','err', esc(e.message))); }
@@ -343,10 +324,6 @@
     };
     document.querySelectorAll('.quick[data-intent]').forEach(btn =>
       btn.onclick = () => runAsk(btn.dataset.intent, textEl.value.trim()));
-    document.getElementById('recipe').onclick = () => {
-      const text = textEl.value.trim() || prompt('Опиши блюдо: как готовишь, из чего, на чём.');
-      if (text && text.trim()) runRecipe(text.trim());
-    };
 
     // Enter to send, Shift+Enter for newline.
     textEl.addEventListener('keydown', (e) => {
