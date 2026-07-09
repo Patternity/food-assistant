@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { mkdirSync } from "node:fs";
 import type { GlossaryEntry } from "./glossary.js";
 import type { PantryItem } from "./pantry.js";
+import type { Recipe } from "./recipes.js";
 import type { Item } from "./services/assistantService.js";
 
 // Durable per-user store (SQLite). In the alpha there is a single user
@@ -64,6 +65,23 @@ CREATE TABLE IF NOT EXISTS glossary (
   source     TEXT,
   updated_at TEXT    NOT NULL,
   PRIMARY KEY (user_id, term)
+);
+
+CREATE TABLE IF NOT EXISTS recipes (
+  user_id       INTEGER NOT NULL,
+  name          TEXT    NOT NULL COLLATE NOCASE,
+  method        TEXT,
+  equipment     TEXT,  -- JSON array
+  required      TEXT,  -- JSON array
+  helpful       TEXT,  -- JSON array
+  optional      TEXT,  -- JSON array
+  staples       TEXT,  -- JSON array
+  side_dishes   TEXT,  -- JSON array
+  substitutions TEXT,  -- JSON array
+  notes         TEXT,
+  raw_text      TEXT,
+  updated_at    TEXT    NOT NULL,
+  PRIMARY KEY (user_id, name)
 );
 `);
 
@@ -256,5 +274,64 @@ export const glossaryRepo = {
     return db
       .prepare(`SELECT term, canonical, category, confidence, source FROM glossary WHERE user_id = ? ORDER BY updated_at DESC`)
       .all(userId) as GlossaryEntry[];
+  },
+};
+
+// --- Recipes (the user's own favorite dishes) -------------------------------
+
+const arr = (v?: string[]) => JSON.stringify(v ?? []);
+const parseArr = (s: string | null): string[] => {
+  try { return s ? (JSON.parse(s) as string[]) : []; } catch { return []; }
+};
+
+export const recipesRepo = {
+  /** Upsert by name (re-describing the same recipe updates it). */
+  save(userId: number, r: Recipe, rawText?: string): void {
+    if (!r?.name?.trim()) return;
+    db.prepare(
+      `INSERT INTO recipes (user_id, name, method, equipment, required, helpful, optional, staples, side_dishes, substitutions, notes, raw_text, updated_at)
+       VALUES (@user_id, @name, @method, @equipment, @required, @helpful, @optional, @staples, @side_dishes, @substitutions, @notes, @raw_text, @updated_at)
+       ON CONFLICT(user_id, name) DO UPDATE SET
+         method = excluded.method, equipment = excluded.equipment, required = excluded.required,
+         helpful = excluded.helpful, optional = excluded.optional, staples = excluded.staples,
+         side_dishes = excluded.side_dishes, substitutions = excluded.substitutions,
+         notes = excluded.notes, raw_text = excluded.raw_text, updated_at = excluded.updated_at`
+    ).run({
+      user_id: userId,
+      name: r.name.trim(),
+      method: r.method ?? null,
+      equipment: arr(r.equipment),
+      required: arr(r.required),
+      helpful: arr(r.helpful),
+      optional: arr(r.optional),
+      staples: arr(r.staples),
+      side_dishes: arr(r.side_dishes),
+      substitutions: arr(r.substitutions),
+      notes: r.notes ?? null,
+      raw_text: rawText ?? null,
+      updated_at: now(),
+    });
+  },
+
+  list(userId: number): Recipe[] {
+    const rows = db
+      .prepare(`SELECT name, method, equipment, required, helpful, optional, staples, side_dishes, substitutions, notes FROM recipes WHERE user_id = ? ORDER BY updated_at DESC`)
+      .all(userId) as Array<Record<string, string | null>>;
+    return rows.map((r) => ({
+      name: r.name as string,
+      method: r.method ?? undefined,
+      equipment: parseArr(r.equipment),
+      required: parseArr(r.required),
+      helpful: parseArr(r.helpful),
+      optional: parseArr(r.optional),
+      staples: parseArr(r.staples),
+      side_dishes: parseArr(r.side_dishes),
+      substitutions: parseArr(r.substitutions),
+      notes: r.notes ?? undefined,
+    }));
+  },
+
+  remove(userId: number, name: string): void {
+    db.prepare(`DELETE FROM recipes WHERE user_id = ? AND name = ?`).run(userId, name);
   },
 };

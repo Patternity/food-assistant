@@ -5,8 +5,15 @@ import { languageDirective, type Lang } from "../lang.js";
 import { glossaryDirective, glossaryLearnHint, type GlossaryEntry } from "../glossary.js";
 import { pantryDirective, pantryLearnHint, type PantryItem } from "../pantry.js";
 import { restockDirective, type RestockHint } from "../restock.js";
+import { recipesDirective, type Recipe } from "../recipes.js";
 
-type SystemOpts = { language?: Lang; glossary?: GlossaryEntry[]; pantry?: PantryItem[]; restock?: RestockHint[] };
+type SystemOpts = {
+  language?: Lang;
+  glossary?: GlossaryEntry[];
+  pantry?: PantryItem[];
+  restock?: RestockHint[];
+  recipes?: Recipe[];
+};
 
 // Build the system message for a task: persona + task prompt + language rule +
 // personal glossary (resolve the user's shorthand) + pantry (what the user has
@@ -20,6 +27,7 @@ function system(task: string, opts: SystemOpts = {}): string {
   s += glossaryDirective(opts.glossary) + glossaryLearnHint();
   s += pantryDirective(opts.pantry) + pantryLearnHint();
   s += restockDirective(opts.restock);
+  s += recipesDirective(opts.recipes);
   return s;
 }
 
@@ -109,13 +117,26 @@ export async function extractItems(input: {
 /** Evaluate a basket: type, verdict, one dish, buy-list, at-home staples. */
 export async function analyzeBasket(
   items: Item[],
-  opts: { language?: Lang; glossary?: GlossaryEntry[]; pantry?: PantryItem[] } = {}
+  opts: { language?: Lang; glossary?: GlossaryEntry[]; pantry?: PantryItem[]; recipes?: Recipe[] } = {}
 ): Promise<BasketAnalysis> {
   const messages: ChatMessage[] = [
     { role: "system", content: system("analyze-basket", opts) },
     { role: "user", content: `Items:\n${JSON.stringify(items, null, 2)}` },
   ];
   return provider().completeJSON<BasketAnalysis>(messages, { temperature: 0.4 });
+}
+
+/** Parse a free-text description of a personal recipe into structure. */
+export async function parseRecipe(input: { text: string; language?: Lang }): Promise<Recipe> {
+  // Recipe parsing doesn't need the memory learn-hints, so build a lean system
+  // message (persona + task + language) rather than the full context stack.
+  let sys = `${persona()}\n\n${loadPrompt("parse-recipe")}`;
+  if (input.language) sys += languageDirective(input.language);
+  const messages: ChatMessage[] = [
+    { role: "system", content: sys },
+    { role: "user", content: input.text.trim() },
+  ];
+  return provider().completeJSON<Recipe>(messages, { temperature: 0.2 });
 }
 
 /** Suggest what to cook from a (recent) item list and a free-text question. */
@@ -126,10 +147,11 @@ export async function suggestCook(input: {
   glossary?: GlossaryEntry[];
   pantry?: PantryItem[];
   restock?: RestockHint[];
+  recipes?: Recipe[];
 }): Promise<CookSuggestion> {
   const ctx = contextBlock(input.items, input.question);
   const messages: ChatMessage[] = [
-    { role: "system", content: system("suggest-cook", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock }) },
+    { role: "system", content: system("suggest-cook", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock, recipes: input.recipes }) },
     { role: "user", content: ctx },
   ];
   return provider().completeJSON<CookSuggestion>(messages, { temperature: 0.5 });
@@ -165,6 +187,7 @@ export async function converse(input: {
   glossary?: GlossaryEntry[];
   pantry?: PantryItem[];
   restock?: RestockHint[];
+  recipes?: Recipe[];
 }): Promise<ConverseResult> {
   const history = (input.history ?? [])
     .slice(-8)
@@ -178,7 +201,7 @@ export async function converse(input: {
     .filter(Boolean)
     .join("\n\n");
   const messages: ChatMessage[] = [
-    { role: "system", content: system("converse", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock }) },
+    { role: "system", content: system("converse", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock, recipes: input.recipes }) },
     { role: "user", content: ctx },
   ];
   return provider().completeJSON<ConverseResult>(messages, { temperature: 0.4 });

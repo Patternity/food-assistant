@@ -4,6 +4,7 @@ import {
   converse,
   extractItems,
   isConfigured,
+  parseRecipe,
   suggestBuy,
   suggestCook,
   type Item,
@@ -13,7 +14,7 @@ import { matchOffer, type AdContext, type AdExclusions } from "../services/adSer
 import { detectLanguage } from "../lang.js";
 import type { GlossaryEntry } from "../glossary.js";
 import type { PantryItem } from "../pantry.js";
-import { DEFAULT_USER_ID, glossaryRepo, itemStatsRepo, pantryRepo, purchasesRepo } from "../store.js";
+import { DEFAULT_USER_ID, glossaryRepo, itemStatsRepo, pantryRepo, purchasesRepo, recipesRepo } from "../store.js";
 
 // Controllers own the use-case flow: validate input, load prerequisites,
 // sequence domain primitives, and map failures to user-facing errors. Services
@@ -35,6 +36,7 @@ function stateOf(userId: number) {
     pantry: pantryRepo.list(userId),
     glossary: glossaryRepo.list(userId),
     restock: itemStatsRepo.dueForRestock(userId),
+    recipes: recipesRepo.list(userId),
   };
 }
 
@@ -90,6 +92,7 @@ export async function analyzeBasketFlow(req: Request, res: Response): Promise<vo
   const userId = userIdOf(req);
   const glossary = glossaryRepo.list(userId);
   const pantry = pantryRepo.list(userId);
+  const recipes = recipesRepo.list(userId);
 
   try {
     // 1) extract a product list from the image and/or text
@@ -98,8 +101,9 @@ export async function analyzeBasketFlow(req: Request, res: Response): Promise<vo
       res.status(422).json({ error: "Could not read any products. Try a clearer image or a text list." });
       return;
     }
-    // 2) evaluate the basket (type, verdict, dish, buy-list)
-    const analysis = await analyzeBasket(items, { language, glossary, pantry });
+    // 2) evaluate the basket (type, verdict, dish, buy-list); saved recipes let
+    //    the model note "this looks like it's for your usual <recipe>"
+    const analysis = await analyzeBasket(items, { language, glossary, pantry, recipes });
 
     // 3) persist: record the purchase (history), sync bought items into the
     //    pantry as observed evidence, and store anything the model learned.
@@ -150,6 +154,7 @@ export async function askFlow(req: Request, res: Response): Promise<void> {
   const glossary = glossaryRepo.list(userId);
   const pantry = pantryRepo.list(userId);
   const restock = itemStatsRepo.dueForRestock(userId);
+  const recipes = recipesRepo.list(userId);
   const itemCats = (items ?? []).map((i) => i.category);
   const itemNames = (items ?? []).map((i) => i.name);
   const language = detectLanguage(question);
@@ -164,7 +169,7 @@ export async function askFlow(req: Request, res: Response): Promise<void> {
       );
       res.json({ intent, result, sponsored, state: stateOf(userId) });
     } else {
-      const result = await suggestCook({ items, question, language, glossary, pantry, restock });
+      const result = await suggestCook({ items, question, language, glossary, pantry, restock, recipes });
       const dishNames = result.dishes?.map((d) => d.name).join(" ");
       const sponsored = attachSponsored(
         { categories: itemCats, terms: tokens(dishNames, ...itemNames) },
@@ -206,10 +211,11 @@ export async function chatFlow(req: Request, res: Response): Promise<void> {
   const glossary = glossaryRepo.list(userId);
   const pantry = pantryRepo.list(userId);
   const restock = itemStatsRepo.dueForRestock(userId);
+  const recipes = recipesRepo.list(userId);
   const language = detectLanguage(message);
 
   try {
-    const result = await converse({ items, history, message, language, glossary, pantry, restock });
+    const result = await converse({ items, history, message, language, glossary, pantry, restock, recipes });
     persistLearned(userId, result);
     const dishNames = result.dishes?.map((d) => d.name).join(" ") ?? "";
     const sponsored = attachSponsored(
@@ -221,6 +227,32 @@ export async function chatFlow(req: Request, res: Response): Promise<void> {
       seen
     );
     res.json({ result, sponsored, state: stateOf(userId) });
+  } catch (err) {
+    fail(res, err);
+  }
+}
+
+/**
+ * POST /api/recipe — save a personal recipe described in free text. Parses it to
+ * structure, stores it, and returns it plus the updated state.
+ */
+export async function recipeFlow(req: Request, res: Response): Promise<void> {
+  if (!ensureConfigured(res)) return;
+  const text: string | undefined = req.body?.text;
+  if (!text?.trim()) {
+    res.status(400).json({ error: "Describe the recipe in a few words." });
+    return;
+  }
+  const userId = userIdOf(req);
+  const language = detectLanguage(text);
+  try {
+    const recipe = await parseRecipe({ text, language });
+    if (!recipe?.name?.trim()) {
+      res.status(422).json({ error: "Couldn't read a recipe from that. Try describing the dish and its ingredients." });
+      return;
+    }
+    recipesRepo.save(userId, recipe, text);
+    res.json({ recipe, state: stateOf(userId) });
   } catch (err) {
     fail(res, err);
   }
@@ -248,6 +280,8 @@ export function feedbackFlow(req: Request, res: Response): void {
   });
   const remove: string | undefined = req.body?.pantryRemove;
   if (remove) pantryRepo.remove(userId, remove);
+  const recipeRemove: string | undefined = req.body?.recipeRemove;
+  if (recipeRemove) recipesRepo.remove(userId, recipeRemove);
   res.json({ state: stateOf(userId) });
 }
 
