@@ -1,0 +1,6 @@
+{
+  "id": "07-breakfast-topup",
+  "source_type": "text",
+  "text": "eggs 10, bread, butter, coffee beans, orange juice",
+  "expect": { "basket_kind": "topup", "notes": "Breakfast-oriented top-up. Should suggest something like scrambled eggs on toast, not a generic 'add vegetables and fruit' lecture." }
+}

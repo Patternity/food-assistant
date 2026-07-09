@@ -1,0 +1,6 @@
+{
+  "id": "08-fish-veg-topup",
+  "source_type": "text",
+  "text": "salmon fillet 2 pcs, lemon, broccoli, baby potatoes, dill",
+  "expect": { "basket_kind": "topup", "notes": "Clear dinner top-up. Should suggest baked/pan salmon with potatoes and broccoli, assume salt/pepper/oil at home, very short buy-list." }
+}

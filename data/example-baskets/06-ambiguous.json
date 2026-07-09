@@ -1,0 +1,6 @@
+{
+  "id": "06-ambiguous",
+  "source_type": "text",
+  "text": "still water 5L, chewing gum",
+  "expect": { "basket_kind": "unclear", "notes": "Too little signal to judge a meal. Should be honest that it can't tell, keep it short, and ask at most one clarifying question rather than inventing a meal plan." }
+}

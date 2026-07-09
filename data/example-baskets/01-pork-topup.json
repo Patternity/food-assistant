@@ -1,0 +1,6 @@
+{
+  "id": "01-pork-topup",
+  "source_type": "text",
+  "text": "pork leg, onions, carrots, cucumbers, mineral water (Essentuki-17 type), glazed curd snacks, dish cleaning gel",
+  "expect": { "basket_kind": "topup", "notes": "Canonical case. Should NOT push side dishes/dairy/fruit. Should respect the mineral water as needed and curd snacks as a fine quick treat. Suggest a pork dish; buy-list short (maybe a fresh veg for salad)." }
+}

@@ -1,0 +1,12 @@
+[
+  { "offer_id": "veg-cucumber", "retailer": "store-x", "brand": "FreshFarm", "product_name": "young cucumbers", "category": "vegetable", "goal_tags": ["fresh-side"], "claim": "20% off today", "label": "Sponsored offer" },
+  { "offer_id": "veg-cabbage", "retailer": "store-x", "brand": "FreshFarm", "product_name": "white cabbage", "category": "vegetable", "goal_tags": ["fresh-side"], "claim": "discounted this week", "label": "Sponsored offer" },
+  { "offer_id": "meat-pork-leg", "retailer": "store-y", "brand": "MeatCo", "product_name": "pork leg", "category": "meat", "goal_tags": [], "claim": "buy 1kg get 10% off", "label": "Partner discount" },
+  { "offer_id": "grain-buckwheat", "retailer": "store-y", "brand": "GreenGrain", "product_name": "buckwheat 900g", "category": "grain", "goal_tags": ["side-dish"], "claim": "2 for the price of 1", "label": "Sponsored offer" },
+  { "offer_id": "legume-lentils", "retailer": "store-x", "brand": "GreenGrain", "product_name": "red lentils", "category": "grain", "goal_tags": ["fiber"], "claim": "15% off", "label": "Sponsored offer" },
+  { "offer_id": "water-mineral", "retailer": "store-y", "brand": "SpringLine", "product_name": "mineral water", "category": "water", "goal_tags": ["low-sugar"], "claim": "6-pack discount", "label": "Retailer offer" },
+  { "offer_id": "dairy-kefir", "retailer": "store-x", "brand": "MilkHouse", "product_name": "kefir 1L", "category": "dairy", "goal_tags": [], "claim": "10% off", "label": "Sponsored offer" },
+  { "offer_id": "sweet-candy", "retailer": "store-x", "brand": "SweetTooth", "product_name": "glazed curd snacks", "category": "sweet", "goal_tags": ["treat"], "claim": "3 for 2", "label": "Sponsored offer" },
+  { "offer_id": "household-dishsoap", "retailer": "store-x", "brand": "CleanUp", "product_name": "dish soap", "category": "household", "goal_tags": [], "claim": "1+1 offer", "label": "Partner discount" },
+  { "offer_id": "alcohol-beer", "retailer": "store-y", "brand": "BrewCo", "product_name": "lager 6-pack", "category": "alcohol", "goal_tags": [], "claim": "weekend price", "label": "Sponsored offer" }
+]

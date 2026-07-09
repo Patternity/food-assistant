@@ -1,0 +1,6 @@
+{
+  "id": "05-carbonara-recipe",
+  "source_type": "text",
+  "text": "spaghetti, pancetta, eggs, parmesan, black pepper",
+  "expect": { "basket_kind": "recipe", "notes": "Ingredients clearly form one dish (carbonara). Should recognize the recipe intent, name the dish, and note nothing important is missing." }
+}

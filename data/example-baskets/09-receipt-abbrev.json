@@ -1,0 +1,6 @@
+{
+  "id": "09-receipt-abbrev",
+  "source_type": "receipt_text",
+  "text": "MOLOKO 3.2% 1L\nHLEB BORODIN\nKURITSA FILE OHL\nGRECHKA 900G\nMASLO PODS 0.5L\nLUK REP 1KG\nPAKET MAYKA",
+  "expect": { "basket_kind": "topup", "notes": "Receipt-style abbreviations (milk, bread, chicken fillet, buckwheat, sunflower oil, onions, plastic bag). Should normalize names and build a simple chicken + buckwheat dinner. Tests extraction on messy text." }
+}

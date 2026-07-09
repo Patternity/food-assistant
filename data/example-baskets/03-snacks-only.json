@@ -1,0 +1,6 @@
+{
+  "id": "03-snacks-only",
+  "source_type": "text",
+  "text": "potato chips, chocolate bar, gummy candy, sugary cola 2L, salted peanuts",
+  "expect": { "basket_kind": "snack", "notes": "Single basket => must NOT moralize or shame. May classify as snack purchase and, at most, offer one neutral 'if you also want a real meal...' note. No lecture." }
+}

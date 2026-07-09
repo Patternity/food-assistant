@@ -1,0 +1,6 @@
+{
+  "id": "02-weekly-full",
+  "source_type": "text",
+  "text": "chicken breast 1kg, ground beef 500g, potatoes 2kg, rice 1kg, pasta 500g, onions, carrots, tomatoes, bell peppers, eggs 10, butter, cheese, bread, apples, bananas, cooking oil, salt",
+  "expect": { "basket_kind": "full", "notes": "Varied, covers several meals. Verdict should read as a solid full shop, no nagging. Buy-list should be near-empty." }
+}

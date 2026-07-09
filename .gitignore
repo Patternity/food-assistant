@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+*.log
+
+# Local runtime data — never commit real uploads or local databases.
+data/uploads/
+*.sqlite
+*.sqlite-journal

@@ -1,0 +1,6 @@
+{
+  "id": "04-household-only",
+  "source_type": "text",
+  "text": "toilet paper, dish soap, laundry detergent, sponges, trash bags, paper towels",
+  "expect": { "basket_kind": "household", "notes": "No food. Should recognize it as a household run, not try to build a meal or push groceries. Dish/buy suggestions minimal or explicitly 'this is a household top-up'." }
+}

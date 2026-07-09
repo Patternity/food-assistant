@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Food Assistant — research alpha</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#f6f6f4; --card:#fff; --line:#e3e3df; --ink:#1c1c1a; --muted:#6b6b66; --accent:#3a7d5d; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#17181a; --card:#1f2124; --line:#33363a; --ink:#e9e9e6; --muted:#9a9a93; --accent:#5bbf8c; } }
+    * { box-sizing: border-box; }
+    body { margin:0; font:15px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+    header { padding:16px 20px; border-bottom:1px solid var(--line); }
+    header h1 { margin:0; font-size:17px; }
+    header p { margin:4px 0 0; color:var(--muted); font-size:13px; }
+    .badge { font-size:11px; color:var(--muted); }
+    main { max-width:720px; margin:0 auto; padding:16px; }
+    #feed { display:flex; flex-direction:column; gap:12px; margin-bottom:16px; }
+    .msg { padding:12px 14px; border-radius:12px; border:1px solid var(--line); background:var(--card); }
+    .msg.user { border-color:var(--accent); }
+    .msg .who { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin-bottom:6px; }
+    .msg img { max-width:100%; border-radius:8px; margin-top:6px; }
+    .kind { display:inline-block; font-size:12px; padding:2px 8px; border-radius:999px; background:var(--accent); color:#fff; margin-bottom:6px; }
+    .row { margin:6px 0; }
+    .row b { color:var(--muted); font-weight:600; }
+    ul { margin:4px 0; padding-left:20px; }
+    .q { color:var(--accent); font-style:italic; }
+    .composer { position:sticky; bottom:0; background:var(--bg); padding-top:8px; }
+    textarea { width:100%; min-height:52px; padding:10px; border:1px solid var(--line); border-radius:10px; background:var(--card); color:var(--ink); resize:vertical; }
+    .controls { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; align-items:center; }
+    button { font:inherit; padding:8px 12px; border:1px solid var(--line); border-radius:10px; background:var(--card); color:var(--ink); cursor:pointer; }
+    button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+    button:disabled { opacity:.5; cursor:default; }
+    .quick { font-size:13px; }
+    .thumb { max-height:40px; border-radius:6px; }
+    .err { color:#c0392b; }
+    .muted { color:var(--muted); font-size:12px; }
+    a.fix { color:var(--accent); text-decoration:none; border-bottom:1px dashed var(--accent); }
+    .pantry { font-size:13px; margin-bottom:8px; color:var(--ink); }
+    .chip { display:inline-block; background:var(--card); border:1px solid var(--line); border-radius:999px; padding:2px 8px; margin:2px 2px 0 0; }
+    .chip a.rm { color:var(--muted); text-decoration:none; margin-left:2px; }
+    /* Sponsored block: visually separated from neutral advice, easy to ignore. */
+    .ad { margin-top:10px; padding:10px 12px; border:1px dashed var(--line); border-radius:10px; background:transparent; }
+    .ad .tag { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); border:1px solid var(--line); border-radius:999px; padding:1px 7px; }
+    .ad .offer { margin-top:6px; font-size:14px; }
+    .ad .dismiss { margin-top:6px; }
+    .ad .dismiss button { font-size:12px; padding:4px 8px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🍳 Food Assistant <span class="badge">research alpha · no memory</span></h1>
+    <p>Upload a basket / receipt or paste an item list. Ask what to cook or what to buy.</p>
+  </header>
+  <main>
+    <div id="feed"></div>
+    <div class="composer">
+      <div id="pantry" class="pantry" hidden></div>
+      <textarea id="text" placeholder="Paste a basket as text, or type a question like 'what should I cook tonight?'"></textarea>
+      <div class="controls">
+        <input id="file" type="file" accept="image/*" hidden />
+        <button id="pick">📷 Image</button>
+        <img id="thumb" class="thumb" hidden alt="" />
+        <button id="send" class="primary">Send ➤</button>
+        <span class="muted">or:</span>
+        <button id="analyze" class="quick">Check basket</button>
+        <button class="quick" data-intent="cook">What can I cook?</button>
+        <button class="quick" data-intent="buy">What to buy?</button>
+      </div>
+      <p class="muted" id="status">Type or attach an image, then Send (Enter). Shift+Enter for a new line.</p>
+    </div>
+  </main>
+
+  <script>
+    const feed = document.getElementById('feed');
+    const textEl = document.getElementById('text');
+    const fileEl = document.getElementById('file');
+    const thumb = document.getElementById('thumb');
+    const statusEl = document.getElementById('status');
+    let imageDataUrl = null;
+    let lastItems = null;   // current basket for this session
+    let history = [];       // short conversation history (user/assistant turns)
+    const adSeen = [];      // offer ids already shown this session (avoid repeats)
+
+    function pushHistory(role, text) { if (text) history.push({ role, text }); history = history.slice(-8); }
+
+    // Session ad-exclusions. In the alpha there is no server memory, so the
+    // user's "don't show this category" choices live here and are sent with
+    // every request — demonstrating that exclusions gate ads (the same idea as
+    // do_not_suggest in the real product).
+    const adExclusions = JSON.parse(localStorage.getItem('adExclusions') || '{"categories":[],"brands":[],"retailers":[]}');
+    function saveExclusions() { localStorage.setItem('adExclusions', JSON.stringify(adExclusions)); }
+
+    // Personal glossary (term -> canonical product), collected unobtrusively from
+    // what the user states/corrects. Persisted locally; sent with each request.
+    let glossary = JSON.parse(localStorage.getItem('glossary') || '[]');
+    function mergeGlossary(learned) {
+      if (!Array.isArray(learned) || !learned.length) return;
+      learned.forEach(e => {
+        if (!e || !e.term || !e.canonical) return;
+        const term = String(e.term).toLowerCase().trim();
+        const entry = { term, canonical: e.canonical, category: e.category, confidence: 'high', source: 'user_confirmed' };
+        const i = glossary.findIndex(g => g.term === term);
+        if (i >= 0) glossary[i] = entry; else glossary.push(entry);
+        toast('Запомнил: ' + term + ' → ' + e.canonical);
+      });
+      localStorage.setItem('glossary', JSON.stringify(glossary));
+    }
+    function toast(msg) { statusEl.textContent = msg; }
+
+    // Pantry ("what's at home"): accumulated from what the user states. The
+    // in-session slice of the durable pantry memory; sent with each request.
+    let pantry = JSON.parse(localStorage.getItem('pantry') || '[]');
+    function mergePantry(learned) {
+      if (!Array.isArray(learned) || !learned.length) return;
+      learned.forEach(e => {
+        if (!e || !e.name) return;
+        const name = String(e.name).trim();
+        const key = name.toLowerCase();
+        const entry = { name, category: e.category, state: e.state === 'missing' ? 'missing' : 'available', source: 'user_confirmed', confidence: 'high' };
+        const i = pantry.findIndex(p => p.name.toLowerCase() === key);
+        if (i >= 0) pantry[i] = entry; else pantry.push(entry);
+        toast(entry.state === 'missing' ? ('Отметил: закончилось — ' + name) : ('В кладовке: ' + name));
+      });
+      localStorage.setItem('pantry', JSON.stringify(pantry));
+      renderPantry();
+    }
+    function renderPantry() {
+      const box = document.getElementById('pantry');
+      const have = pantry.filter(p => p.state !== 'missing');
+      if (!have.length) { box.hidden = true; return; }
+      box.hidden = false;
+      box.innerHTML = '<b>🏠 Дома есть:</b> ' + have.map(p =>
+        '<span class="chip">' + esc(p.name) + ' <a href="#" class="rm" data-n="' + esc(p.name) + '">×</a></span>').join(' ');
+      box.querySelectorAll('a.rm').forEach(a => a.onclick = (ev) => {
+        ev.preventDefault();
+        pantry = pantry.filter(p => p.name !== a.dataset.n);
+        localStorage.setItem('pantry', JSON.stringify(pantry));
+        renderPantry();
+      });
+    }
+
+    // Render a sponsored offer (MOCK) as a clearly separated, labeled block.
+    function renderAd(sponsored, into) {
+      if (!sponsored) return;
+      if (!adSeen.includes(sponsored.offer_id)) adSeen.push(sponsored.offer_id);
+      const ad = el('div', 'ad');
+      ad.innerHTML =
+        '<span class="tag">' + esc(sponsored.label || 'Sponsored offer') + '</span>' +
+        '<div class="offer">' + esc(sponsored.product_name) + ' — ' + esc(sponsored.claim) +
+        ' <span class="muted">(' + esc(sponsored.brand) + ', ' + esc(sponsored.retailer) + ')</span></div>';
+      const dismiss = el('div', 'dismiss');
+      const btn = el('button', null, 'Don’t show ' + esc(sponsored.category) + ' offers');
+      btn.onclick = () => {
+        if (!adExclusions.categories.includes(sponsored.category)) adExclusions.categories.push(sponsored.category);
+        saveExclusions();
+        ad.remove();
+        statusEl.textContent = 'Blocked "' + sponsored.category + '" ads for this session.';
+      };
+      dismiss.appendChild(btn);
+      ad.appendChild(dismiss);
+      into.appendChild(ad);
+    }
+
+    document.getElementById('pick').onclick = () => fileEl.click();
+    fileEl.onchange = () => {
+      const f = fileEl.files[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = () => { imageDataUrl = r.result; thumb.src = r.result; thumb.hidden = false; };
+      r.readAsDataURL(f);
+    };
+
+    function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
+    function esc(s) { return String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+    function list(arr) { return (arr && arr.length) ? '<ul>' + arr.map(x => '<li>' + esc(x) + '</li>').join('') + '</ul>' : '<span class="muted">—</span>'; }
+
+    function addUser(text, img) {
+      const m = el('div', 'msg user'); m.appendChild(el('div', 'who', 'you'));
+      if (text) m.appendChild(el('div', null, esc(text)));
+      if (img) { const i = new Image(); i.src = img; m.appendChild(i); }
+      feed.appendChild(m); m.scrollIntoView();
+    }
+    function addBot(node) {
+      const m = el('div', 'msg'); m.appendChild(el('div', 'who', 'assistant'));
+      m.appendChild(node); feed.appendChild(m); m.scrollIntoView();
+    }
+    function busy(on, label) { statusEl.textContent = on ? (label || 'Thinking…') : 'Ready.'; document.querySelectorAll('button').forEach(b => b.disabled = on); }
+
+    async function post(url, body) {
+      const r = await fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+      return data;
+    }
+
+    // Render the shared cook/buy/chat result shape into an element.
+    function renderResult(result) {
+      const n = el('div');
+      let html = '<div class="row">' + esc(result.reply) + '</div>';
+      if (result.dishes) result.dishes.forEach(d => {
+        html += '<div class="row"><b>' + esc(d.name) + '</b>' +
+          (d.missing_required && d.missing_required.length ? ' <span class="err">(missing: ' + d.missing_required.map(esc).join(', ') + ')</span>' : '') +
+          '<div class="muted">required: ' + (d.required||[]).map(esc).join(', ') + '</div></div>';
+      });
+      if (result.buy && result.buy.length) html += '<div class="row"><b>Buy:</b>' + list(result.buy) + '</div>';
+      if (result.likely_at_home && result.likely_at_home.length) html += '<div class="row"><b>Probably at home:</b>' + list(result.likely_at_home) + '</div>';
+      if (result.questions && result.questions.length) html += '<div class="row q">' + result.questions.map(esc).join('<br>') + '</div>';
+      n.innerHTML = html;
+      return n;
+    }
+
+    async function runAnalyze(text) {
+      addUser(text, imageDataUrl);
+      pushHistory('user', text || '[uploaded a basket image]');
+      busy(true, 'Reading basket…');
+      try {
+        const { items, analysis, sponsored } = await post('/api/analyze', { text, imageDataUrl, adExclusions, adSeen, glossary, pantry });
+        lastItems = items;           // start / replace the current basket
+        history = [];                // fresh conversation for a new basket
+        mergeGlossary(analysis.glossary_learned);
+        mergePantry(analysis.pantry_learned);
+        pushHistory('user', 'basket: ' + items.map(i => i.name).join(', '));
+        pushHistory('assistant', analysis.verdict + ' Cook: ' + analysis.dish);
+        const n = el('div');
+        n.innerHTML =
+          '<span class="kind">' + esc(analysis.basket_kind) + '</span>' +
+          '<div class="row">' + esc(analysis.verdict) + '</div>' +
+          '<div class="row"><b>Cook:</b> ' + esc(analysis.dish) + '</div>' +
+          '<div class="row"><b>Buy on the way:</b>' + list(analysis.buy) + '</div>' +
+          '<div class="row"><b>Probably at home:</b>' + list(analysis.likely_at_home) + '</div>' +
+          (analysis.questions && analysis.questions.length ? '<div class="row q">' + analysis.questions.map(esc).join('<br>') + '</div>' : '') +
+          '<div class="row muted">Read (tap to correct): ' +
+            items.map((i, idx) => '<a href="#" class="fix" data-i="' + idx + '">' + esc(i.name) + '</a>').join(', ') + '</div>';
+        // Tap a recognized item to correct it -> writes term -> canonical to the glossary.
+        n.querySelectorAll('a.fix').forEach(a => a.onclick = (ev) => {
+          ev.preventDefault();
+          const it = lastItems[a.dataset.i];
+          const corrected = prompt('This is actually…', it.name);
+          if (corrected && corrected.trim() && corrected.trim() !== it.name) {
+            mergeGlossary([{ term: it.name, canonical: corrected.trim(), category: it.category }]);
+            it.name = corrected.trim();
+            a.textContent = corrected.trim();
+          }
+        });
+        renderAd(sponsored, n);
+        addBot(n);
+        textEl.value=''; imageDataUrl=null; thumb.hidden=true;
+      } catch (e) { addBot(el('div','err', esc(e.message))); }
+      busy(false);
+    }
+
+    async function runAsk(intent, question) {
+      const shown = question || (intent === 'buy' ? 'What should I buy?' : 'What can I cook?');
+      addUser(shown);
+      pushHistory('user', shown);
+      busy(true);
+      try {
+        const { result, sponsored } = await post('/api/ask', { question, intent, items: lastItems, adExclusions, adSeen, glossary, pantry });
+        pushHistory('assistant', result.reply);
+        const n = renderResult(result);
+        renderAd(sponsored, n);
+        addBot(n);
+        textEl.value='';
+      } catch (e) { addBot(el('div','err', esc(e.message))); }
+      busy(false);
+    }
+
+    // Follow-up in the current basket's session: questions, pantry corrections
+    // ("not sure I have oil"), preferences — WITHOUT re-analyzing as a new basket.
+    async function runChat(message) {
+      addUser(message);
+      pushHistory('user', message);
+      busy(true);
+      try {
+        const { result, sponsored } = await post('/api/chat', { message, items: lastItems, history, adExclusions, adSeen, glossary, pantry });
+        mergeGlossary(result.glossary_learned);
+        mergePantry(result.pantry_learned);
+        pushHistory('assistant', result.reply);
+        const n = renderResult(result);
+        renderAd(sponsored, n);
+        addBot(n);
+        textEl.value='';
+      } catch (e) { addBot(el('div','err', esc(e.message))); }
+      busy(false);
+    }
+
+    // Generic Send: an image or the first message starts/replaces the basket;
+    // once a basket exists, further messages continue the conversation about it.
+    function send() {
+      const text = textEl.value.trim();
+      if (!text && !imageDataUrl) { statusEl.innerHTML = '<span class="err">Type something or attach an image.</span>'; return; }
+      if (imageDataUrl) { runAnalyze(text); return; }        // new basket from image
+      if (!lastItems) { runAnalyze(text); return; }          // no basket yet -> treat text as the basket
+      runChat(text);                                          // basket exists -> keep context
+    }
+
+    document.getElementById('send').onclick = send;
+    document.getElementById('analyze').onclick = () => {
+      const text = textEl.value.trim();
+      if (!text && !imageDataUrl) { statusEl.innerHTML = '<span class="err">Type something or attach an image.</span>'; return; }
+      runAnalyze(text);
+    };
+    document.querySelectorAll('.quick[data-intent]').forEach(btn =>
+      btn.onclick = () => runAsk(btn.dataset.intent, textEl.value.trim()));
+
+    // Enter to send, Shift+Enter for newline.
+    textEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+    });
+
+    renderPantry();
+    fetch('/api/health').then(r=>r.json()).then(h => { if (!h.configured) statusEl.innerHTML = '<span class="err">LLM not configured — set LLM_API_KEY in .env</span>'; });
+  </script>
+</body>
+</html>

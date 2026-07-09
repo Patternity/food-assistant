@@ -1,0 +1,6 @@
+{
+  "id": "10-guest-bbq",
+  "source_type": "text",
+  "text": "pork neck 3kg, marinade, pita bread, tomatoes, red onion, ketchup, disposable plates, charcoal, beer 6",
+  "expect": { "basket_kind": "recipe", "notes": "Clearly a BBQ for several people (guests). Large meat + charcoal + disposables. Should read the occasion, not judge portion size as 'too much meat', and not push everyday nutrition advice." }
+}
