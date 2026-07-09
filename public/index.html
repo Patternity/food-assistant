@@ -137,9 +137,25 @@
         ? ('Отметил: закончилось — ' + e.name) : ('В кладовке: ' + e.name)));
     }
 
+    // "Дома есть" is shown only while cooking a chosen dish. Even then it lists
+    // only relevant items: those actually used in the dish, OR ones the user
+    // explicitly said they have (user_confirmed) — never non-food, never random
+    // receipt items that aren't part of the dish.
+    let showPantry = false;
+    let dishTokens = new Set();          // ingredient tokens of the current dish
+    function toks(str) { return String(str || '').toLowerCase().split(/[^a-zа-я0-9]+/i).filter(t => t.length > 2); }
+    function usedInDish(p) { return toks(p.name).some(t => dishTokens.has(t)); }
+    function dishIngredientTokens(result) {
+      const out = [];
+      (result.dishes || []).forEach(d => ['required','helpful','optional','staples'].forEach(k => (d[k]||[]).forEach(x => out.push(x))));
+      (result.likely_at_home || []).forEach(x => out.push(x));
+      const s = new Set(); out.forEach(x => toks(x).forEach(t => s.add(t))); return s;
+    }
     function renderPantry() {
       const box = document.getElementById('pantry');
-      const have = (pantry || []).filter(p => p.state !== 'missing');
+      const have = showPantry
+        ? (pantry || []).filter(p => p.state !== 'missing' && p.category !== 'household' && (p.source === 'user_confirmed' || usedInDish(p)))
+        : [];
       if (!have.length) { box.hidden = true; return; }
       box.hidden = false;
       box.innerHTML = '<b>🏠 Дома есть:</b> ' + have.map(p => {
@@ -234,6 +250,7 @@
         lastItems = items;           // start / replace the current basket
         history = [];                // fresh conversation for a new basket
         toastLearned(analysis.glossary_learned, analysis.pantry_learned);
+        showPantry = false;            // basket evaluation — pantry stays hidden
         applyState(state);
         pushHistory('user', 'basket: ' + items.map(i => i.name).join(', '));
         pushHistory('assistant', analysis.verdict + ' Cook: ' + analysis.dish);
@@ -276,6 +293,8 @@
       busy(true);
       try {
         const { result, sponsored, state } = await post('/api/ask', { question, intent, items: lastItems, adExclusions, adSeen });
+        showPantry = (intent === 'cook');   // show what's at home only when cooking
+        dishTokens = showPantry ? dishIngredientTokens(result) : new Set();
         applyState(state);
         pushHistory('assistant', result.reply);
         const n = renderResult(result);
@@ -296,6 +315,8 @@
         const { result, sponsored, state } = await post('/api/chat', { message, items: lastItems, history, adExclusions, adSeen });
         toastLearned(result.glossary_learned, result.pantry_learned);
         if (result.recipe_learned && result.recipe_learned.name) toast('★ Сохранил рецепт: ' + result.recipe_learned.name);
+        showPantry = !!(result.dishes && result.dishes.length);  // show only when a dish is on the table
+        dishTokens = showPantry ? dishIngredientTokens(result) : new Set();
         applyState(state);
         pushHistory('assistant', result.reply);
         const n = renderResult(result);
