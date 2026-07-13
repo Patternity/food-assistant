@@ -276,7 +276,7 @@
       pushHistory('user', text || '[uploaded a basket image]');
       busy(true, 'Reading basket…');
       try {
-        const { items, analysis, sponsored, state } = await post('/api/analyze', { text, imageDataUrl, adExclusions, adSeen });
+        const { items, analysis, sponsored, state, saved } = await post('/api/analyze', { text, imageDataUrl, adExclusions, adSeen });
         lastItems = items;           // start / replace the current basket
         history = [];                // fresh conversation for a new basket
         toastLearned(analysis.glossary_learned, analysis.pantry_learned);
@@ -293,7 +293,8 @@
           '<div class="row"><b>Probably at home:</b>' + list(analysis.likely_at_home) + '</div>' +
           (analysis.questions && analysis.questions.length ? '<div class="row q">' + analysis.questions.map(esc).join('<br>') + '</div>' : '') +
           '<div class="row muted">Read (tap to correct): ' +
-            items.map((i, idx) => '<a href="#" class="fix" data-i="' + idx + '">' + esc(i.name) + '</a>').join(', ') + '</div>';
+            items.map((i, idx) => '<a href="#" class="fix" data-i="' + idx + '">' + esc(i.name) + '</a>').join(', ') + '</div>' +
+          (saved === false ? '<div class="row muted">↩︎ Не сохранил в твою историю — это не для тебя (' + esc(analysis.attribution || '') + ').</div>' : '');
         // Tap a recognized item to correct it -> writes term -> canonical to the glossary (server).
         n.querySelectorAll('a.fix').forEach(a => a.onclick = async (ev) => {
           ev.preventDefault();
@@ -346,6 +347,7 @@
         toastLearned(result.glossary_learned, result.pantry_learned);
         if (result.recipe_learned && result.recipe_learned.name) toast('★ Сохранил рецепт: ' + result.recipe_learned.name);
         (result.equipment_learned || []).forEach(e => e && e.name && toast('🍳 Техника: ' + e.name + (e.state === 'absent' ? ' (нет)' : '')));
+        if (result.forget_last_purchase) toast('↩︎ Забыл прошлый закуп — он не для тебя');
         showPantry = !!(result.dishes && result.dishes.length);  // show only when a dish is on the table
         dishTokens = showPantry ? dishIngredientTokens(result) : new Set();
         applyState(state);

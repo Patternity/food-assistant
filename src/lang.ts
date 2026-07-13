@@ -37,6 +37,7 @@ export function languageDirective(lang: Lang): string {
     `Do NOT translate the JSON keys. Keep these machine values ALWAYS in English,`,
     `exactly from the allowed sets, in EVERY object where they appear:`,
     `- "basket_kind": topup|full|snack|household|recipe|unclear`,
+    `- "attribution": self|guests|gift|pet|one_time|other`,
     `- any "category" field (on items, glossary_learned, pantry_learned):`,
     `  meat|fish|vegetable|fruit|dairy|grain|bread|drink|water|sweet|snack|`,
     `  household|condiment|other`,

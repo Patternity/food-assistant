@@ -158,6 +158,22 @@ export const purchasesRepo = {
     return tx();
   },
 
+  /** Delete the most recent purchase (and its items). Returns its canonical
+   *  names so the caller can also roll back the pantry it observed. */
+  deleteLast(userId: number): string[] {
+    const row = db.prepare(`SELECT id FROM purchases WHERE user_id = ? ORDER BY ts DESC LIMIT 1`).get(userId) as
+      | { id: number }
+      | undefined;
+    if (!row) return [];
+    const names = (
+      db
+        .prepare(`SELECT DISTINCT COALESCE(NULLIF(TRIM(canonical), ''), name) AS n FROM purchase_items WHERE purchase_id = ?`)
+        .all(row.id) as Array<{ n: string }>
+    ).map((r) => r.n);
+    db.prepare(`DELETE FROM purchases WHERE id = ?`).run(row.id); // cascade removes purchase_items
+    return names;
+  },
+
   recent(userId: number, limit = 20): Array<{ id: number; ts: string; basket_kind: string | null; items: string[] }> {
     const rows = db
       .prepare(`SELECT id, ts, basket_kind FROM purchases WHERE user_id = ? ORDER BY ts DESC LIMIT ?`)
@@ -234,6 +250,16 @@ export const pantryRepo = {
 
   remove(userId: number, name: string): void {
     db.prepare(`DELETE FROM pantry WHERE user_id = ? AND name = ?`).run(userId, name);
+  },
+
+  /** Roll back observed (not user-confirmed) pantry rows for the given names —
+   *  used when a purchase turns out not to be the user's (e.g. for guests). */
+  removeObserved(userId: number, names: string[]): void {
+    const stmt = db.prepare(`DELETE FROM pantry WHERE user_id = ? AND name = ? AND source = 'observed'`);
+    const tx = db.transaction(() => {
+      for (const n of names ?? []) if (n?.trim()) stmt.run(userId, n.trim());
+    });
+    tx();
   },
 };
 

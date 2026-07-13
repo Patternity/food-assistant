@@ -108,15 +108,19 @@ export async function analyzeBasketFlow(req: Request, res: Response): Promise<vo
     //    the model note "this looks like it's for your usual <recipe>"
     const analysis = await analyzeBasket(items, { language, glossary, pantry, recipes, equipment });
 
-    // 3) persist: record the purchase (history), sync bought items into the
-    //    pantry as observed evidence, and store anything the model learned.
-    purchasesRepo.add(
-      userId,
-      { source_type: imageDataUrl ? "image" : "text", basket_kind: analysis.basket_kind, raw_text: text },
-      items
-    );
-    pantryRepo.observeFromPurchase(userId, items);
-    persistLearned(userId, analysis);
+    // 3) persist — but only if this basket is the user's own consumption.
+    //    If it's for guests / a gift / the pet / a one-off, we simply don't save
+    //    it, so it never pollutes history, pantry, or cadence.
+    const forSelf = !analysis.attribution || analysis.attribution === "self";
+    if (forSelf) {
+      purchasesRepo.add(
+        userId,
+        { source_type: imageDataUrl ? "image" : "text", basket_kind: analysis.basket_kind, raw_text: text },
+        items
+      );
+      pantryRepo.observeFromPurchase(userId, items);
+      persistLearned(userId, analysis);
+    }
 
     // 4) MOCK ad, chosen after the answer, gated by user exclusions
     const exclusions: AdExclusions | undefined = req.body?.adExclusions;
@@ -130,7 +134,7 @@ export async function analyzeBasketFlow(req: Request, res: Response): Promise<vo
       seen
     );
 
-    res.json({ items, analysis, sponsored, state: stateOf(userId) });
+    res.json({ items, analysis, sponsored, saved: forSelf, state: stateOf(userId) });
   } catch (err) {
     fail(res, err);
   }
@@ -228,6 +232,12 @@ export async function chatFlow(req: Request, res: Response): Promise<void> {
       recipesRepo.save(userId, result.recipe_learned, message);
       // Equipment named in a saved recipe is evidence the user has it.
       equipmentRepo.observeFromRecipe(userId, result.recipe_learned.equipment ?? []);
+    }
+    // The user revealed the last basket wasn't theirs -> drop it from history and
+    // roll back the pantry it observed.
+    if (result.forget_last_purchase) {
+      const names = purchasesRepo.deleteLast(userId);
+      pantryRepo.removeObserved(userId, names);
     }
     const dishNames = result.dishes?.map((d) => d.name).join(" ") ?? "";
     const sponsored = attachSponsored(

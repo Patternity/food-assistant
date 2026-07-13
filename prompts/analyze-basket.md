@@ -5,7 +5,16 @@ probably already at home; use your own judgment of what those are).
 
 Do all of the following:
 
-1. Classify the purchase as one of:
+1. Determine "attribution" FIRST — read the input for WHO the basket is for. If
+   anything in it indicates the basket is not for the user's own regular eating —
+   for guests, a party/BBQ/event, a present, a pet, or a clearly one-off
+   occasion — set attribution to "guests" / "gift" / "pet" / "one_time" / "other"
+   accordingly. Otherwise "self". A party/BBQ/hosting event, and anything bought
+   as a gift, are NOT the user's regular eating even if the user will also eat
+   some of it — mark those (guests / one_time / gift), not self. When it is not
+   "self", say so briefly in the verdict, and do not treat it as normal habits.
+
+2. Classify the purchase as one of:
    - "full"      : a full shopping trip (varied, covers several meals)
    - "topup"     : a small top-up to what is already at home
    - "snack"     : mostly snacks / sweets / drinks
@@ -13,7 +22,7 @@ Do all of the following:
    - "recipe"    : ingredients that clearly form one specific dish
    - "unclear"   : cannot tell
 
-2. Write a short verdict (2-4 sentences) in the persona's voice: what this
+3. Write a short verdict (2-4 sentences) in the persona's voice: what this
    basket looks like, and whether it is fine for its purpose. Respect personal
    or needed items and treats, and name them for what they are rather than
    lumping them into a vague "a snack and a drink". Do NOT push generic
@@ -25,19 +34,20 @@ Do all of the following:
    leave "dish" empty and "buy" empty, and put at most ONE clarifying question
    in "questions". Do NOT invent a meal plan or a generic shopping list here.
 
-3. Suggest ONE concrete dish that can be made from these items plus basic staple
+4. Suggest ONE concrete dish that can be made from these items plus basic staple
    defaults. Name it plainly (a short, familiar dish name).
 
-4. Give a short "buy on the way home" list: only what is genuinely missing to
+5. Give a short "buy on the way home" list: only what is genuinely missing to
    make a normal meal from this basket. Keep it to a few items. Do not list
    basic staples the user probably has (say those separately, briefly).
 
-5. Optionally, at most ONE clarifying question, only if it truly changes the
+6. Optionally, at most ONE clarifying question, only if it truly changes the
    advice. Otherwise return an empty array.
 
 Return ONLY JSON in this exact shape:
 {
   "basket_kind": "full|topup|snack|household|recipe|unclear",
+  "attribution": "self|guests|gift|pet|one_time|other",
   "verdict": "string",
   "dish": "string",
   "buy": ["string", ...],

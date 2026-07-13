@@ -51,6 +51,7 @@ export type Item = {
 
 export type BasketAnalysis = {
   basket_kind: "full" | "topup" | "snack" | "household" | "recipe" | "unclear";
+  attribution?: "self" | "guests" | "gift" | "pet" | "one_time" | "other";
   verdict: string;
   dish: string;
   buy: string[];
@@ -93,6 +94,7 @@ export type ConverseResult = {
   pantry_learned?: PantryItem[];
   recipe_learned?: Recipe;
   equipment_learned?: EquipmentItem[];
+  forget_last_purchase?: boolean;
 };
 
 const provider = () => getProvider();

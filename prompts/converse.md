@@ -38,7 +38,8 @@ omit or leave arrays empty otherwise):
   "glossary_learned": [ { "term": "string", "canonical": "string", "category": "string" } ],
   "pantry_learned": [ { "name": "string", "category": "string", "state": "available|missing" } ],
   "recipe_learned": { "name": "string", "method": "string", "equipment": ["string"], "required": ["string"], "helpful": ["string"], "optional": ["string"], "staples": ["string"], "side_dishes": ["string"], "substitutions": ["string"], "notes": "string" },
-  "equipment_learned": [ { "name": "string", "state": "has|absent" } ]
+  "equipment_learned": [ { "name": "string", "state": "has|absent" } ],
+  "forget_last_purchase": false
 }
 
 Include "glossary_learned" ONLY when the user's message states or corrects what a
@@ -68,3 +69,8 @@ EQUIPMENT — recognize it yourself: when the user states or clearly implies whi
 kitchen equipment they have or don't have (e.g. they cook something in a specific
 appliance, or say they lack one), record each in "equipment_learned" with
 state "has" or "absent". Only from what the user states/implies, not a guess.
+
+ATTRIBUTION — if the user reveals that the basket they just showed was NOT for
+their own regular eating (it was for guests, a gift, the pet, a one-off), set
+"forget_last_purchase" to true so it is dropped from their history and pantry.
+Only when the user makes this clear.
