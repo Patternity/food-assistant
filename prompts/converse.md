@@ -37,7 +37,8 @@ omit or leave arrays empty otherwise):
   "questions": ["string"],
   "glossary_learned": [ { "term": "string", "canonical": "string", "category": "string" } ],
   "pantry_learned": [ { "name": "string", "category": "string", "state": "available|missing" } ],
-  "recipe_learned": { "name": "string", "method": "string", "equipment": ["string"], "required": ["string"], "helpful": ["string"], "optional": ["string"], "staples": ["string"], "side_dishes": ["string"], "substitutions": ["string"], "notes": "string" }
+  "recipe_learned": { "name": "string", "method": "string", "equipment": ["string"], "required": ["string"], "helpful": ["string"], "optional": ["string"], "staples": ["string"], "side_dishes": ["string"], "substitutions": ["string"], "notes": "string" },
+  "equipment_learned": [ { "name": "string", "state": "has|absent" } ]
 }
 
 Include "glossary_learned" ONLY when the user's message states or corrects what a
@@ -62,3 +63,8 @@ name.
 - If it merely repeats a saved recipe with nothing new, OMIT "recipe_learned".
 Only claim in your reply that a recipe was saved when you actually include
 "recipe_learned". Do not save one-off remarks that aren't a real recipe.
+
+EQUIPMENT — recognize it yourself: when the user states or clearly implies which
+kitchen equipment they have or don't have (e.g. they cook something in a specific
+appliance, or say they lack one), record each in "equipment_learned" with
+state "has" or "absent". Only from what the user states/implies, not a guess.

@@ -11,6 +11,9 @@ Rules:
   the user's language. If the user glossary maps this product to a term, use that
   exact term as the canonical. Two different labels for the same product must get
   the SAME canonical (this is what lets purchases and pantry line up over time).
+- "edible": true if this is a food or drink a person can eat or cook with; false
+  for non-food products (cleaning supplies, hygiene, household goods, pet items,
+  etc.). Judge by what the product actually is.
 - Include quantity and unit only if clearly present; otherwise leave them null.
 - Guess a coarse category from this set: meat, fish, vegetable, fruit, dairy,
   grain, bread, drink, water, sweet, snack, household, condiment, other.
@@ -19,6 +22,6 @@ Rules:
 Return ONLY JSON in this exact shape:
 {
   "items": [
-    { "name": "string", "canonical": "string", "qty": number|null, "unit": "string|null", "category": "string" }
+    { "name": "string", "canonical": "string", "edible": true, "qty": number|null, "unit": "string|null", "category": "string" }
   ]
 }

@@ -59,6 +59,7 @@
       <div id="pantry" class="pantry" hidden></div>
       <div id="restock" class="pantry restock" hidden></div>
       <div id="recipes" class="pantry" hidden></div>
+      <div id="equipment" class="pantry" hidden></div>
       <textarea id="text" placeholder="Paste a basket as text, or type a question like 'what should I cook tonight?'"></textarea>
       <div class="controls">
         <input id="file" type="file" accept="image/*" hidden />
@@ -102,14 +103,30 @@
     function toast(msg) { statusEl.textContent = msg; }
 
     let recipes = [];
+    let equipment = [];
     function applyState(state) {
       if (!state) return;
       if (Array.isArray(state.glossary)) glossary = state.glossary;
       if (Array.isArray(state.pantry)) pantry = state.pantry;
       if (Array.isArray(state.recipes)) recipes = state.recipes;
+      if (Array.isArray(state.equipment)) equipment = state.equipment;
       renderPantry();
       renderRestock(state.restock);
       renderRecipes();
+      renderEquipment();
+    }
+    function renderEquipment() {
+      const box = document.getElementById('equipment');
+      const has = (equipment || []).filter(e => (e.state || 'has') !== 'absent');
+      if (!has.length) { box.hidden = true; return; }
+      box.hidden = false;
+      box.innerHTML = '<b>🍳 Техника:</b> ' + has.map(e =>
+        '<span class="chip">' + esc(e.name) + ' <a href="#" class="rme" data-n="' + esc(e.name) + '">×</a></span>').join(' ');
+      box.querySelectorAll('a.rme').forEach(a => a.onclick = async (ev) => {
+        ev.preventDefault();
+        try { const rr = await post('/api/feedback', { equipmentRemove: a.dataset.n }); applyState(rr.state); }
+        catch (e) { toast(e.message); }
+      });
     }
     function renderRecipes() {
       const box = document.getElementById('recipes');
@@ -154,7 +171,7 @@
     function renderPantry() {
       const box = document.getElementById('pantry');
       const have = showPantry
-        ? (pantry || []).filter(p => p.state !== 'missing' && p.category !== 'household' && (p.source === 'user_confirmed' || usedInDish(p)))
+        ? (pantry || []).filter(p => p.state !== 'missing' && p.edible !== false && (p.source === 'user_confirmed' || usedInDish(p)))
         : [];
       if (!have.length) { box.hidden = true; return; }
       box.hidden = false;
@@ -328,6 +345,7 @@
         const { result, sponsored, state } = await post('/api/chat', { message, items: lastItems, history, adExclusions, adSeen });
         toastLearned(result.glossary_learned, result.pantry_learned);
         if (result.recipe_learned && result.recipe_learned.name) toast('★ Сохранил рецепт: ' + result.recipe_learned.name);
+        (result.equipment_learned || []).forEach(e => e && e.name && toast('🍳 Техника: ' + e.name + (e.state === 'absent' ? ' (нет)' : '')));
         showPantry = !!(result.dishes && result.dishes.length);  // show only when a dish is on the table
         dishTokens = showPantry ? dishIngredientTokens(result) : new Set();
         applyState(state);

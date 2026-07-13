@@ -20,6 +20,7 @@ export type PantryItem = {
   state?: "available" | "missing"; // default "available"
   source?: "user_confirmed" | "observed"; // forward-compat for the durable pantry
   confidence?: "low" | "medium" | "high";
+  edible?: boolean; // false for non-food (household/etc.) — kept, but not cooked with
   updated_at?: string; // ISO; for observed items ~ purchase time, used for recency
 };
 

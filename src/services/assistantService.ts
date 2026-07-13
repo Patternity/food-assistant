@@ -6,6 +6,7 @@ import { glossaryDirective, glossaryLearnHint, type GlossaryEntry } from "../glo
 import { pantryDirective, pantryLearnHint, type PantryItem } from "../pantry.js";
 import { restockDirective, type RestockHint } from "../restock.js";
 import { recipesDirective, type Recipe } from "../recipes.js";
+import { equipmentDirective, type EquipmentItem } from "../equipment.js";
 
 type SystemOpts = {
   language?: Lang;
@@ -13,6 +14,7 @@ type SystemOpts = {
   pantry?: PantryItem[];
   restock?: RestockHint[];
   recipes?: Recipe[];
+  equipment?: EquipmentItem[];
 };
 
 // Build the system message for a task: persona + task prompt + language rule +
@@ -28,6 +30,7 @@ function system(task: string, opts: SystemOpts = {}): string {
   s += pantryDirective(opts.pantry) + pantryLearnHint();
   s += restockDirective(opts.restock);
   s += recipesDirective(opts.recipes);
+  s += equipmentDirective(opts.equipment);
   return s;
 }
 
@@ -40,6 +43,7 @@ function system(task: string, opts: SystemOpts = {}): string {
 export type Item = {
   name: string; // as read from the receipt/list
   canonical: string; // brand/size-agnostic identity used to line up purchases & pantry
+  edible: boolean; // is this a food/drink you can cook or eat with? (vs household/etc.)
   qty: number | null;
   unit: string | null;
   category: string;
@@ -88,6 +92,7 @@ export type ConverseResult = {
   glossary_learned?: GlossaryEntry[];
   pantry_learned?: PantryItem[];
   recipe_learned?: Recipe;
+  equipment_learned?: EquipmentItem[];
 };
 
 const provider = () => getProvider();
@@ -116,13 +121,18 @@ export async function extractItems(input: {
   ];
   const out = await provider().completeJSON<{ items?: Item[] }>(messages, { temperature: 0.1 });
   // Canonical is the identity used for pantry/cadence; fall back to the raw name.
-  return (out.items ?? []).map((it) => ({ ...it, canonical: (it.canonical || it.name || "").trim() }));
+  // edible defaults to true unless the model explicitly marks it non-food.
+  return (out.items ?? []).map((it) => ({
+    ...it,
+    canonical: (it.canonical || it.name || "").trim(),
+    edible: it.edible !== false,
+  }));
 }
 
 /** Evaluate a basket: type, verdict, one dish, buy-list, at-home staples. */
 export async function analyzeBasket(
   items: Item[],
-  opts: { language?: Lang; glossary?: GlossaryEntry[]; pantry?: PantryItem[]; recipes?: Recipe[] } = {}
+  opts: { language?: Lang; glossary?: GlossaryEntry[]; pantry?: PantryItem[]; recipes?: Recipe[]; equipment?: EquipmentItem[] } = {}
 ): Promise<BasketAnalysis> {
   const messages: ChatMessage[] = [
     { role: "system", content: system("analyze-basket", opts) },
@@ -140,10 +150,11 @@ export async function suggestCook(input: {
   pantry?: PantryItem[];
   restock?: RestockHint[];
   recipes?: Recipe[];
+  equipment?: EquipmentItem[];
 }): Promise<CookSuggestion> {
   const ctx = contextBlock(input.items, input.question);
   const messages: ChatMessage[] = [
-    { role: "system", content: system("suggest-cook", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock, recipes: input.recipes }) },
+    { role: "system", content: system("suggest-cook", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock, recipes: input.recipes, equipment: input.equipment }) },
     { role: "user", content: ctx },
   ];
   return provider().completeJSON<CookSuggestion>(messages, { temperature: 0.5 });
@@ -180,6 +191,7 @@ export async function converse(input: {
   pantry?: PantryItem[];
   restock?: RestockHint[];
   recipes?: Recipe[];
+  equipment?: EquipmentItem[];
 }): Promise<ConverseResult> {
   const history = (input.history ?? [])
     .slice(-8)
@@ -193,7 +205,7 @@ export async function converse(input: {
     .filter(Boolean)
     .join("\n\n");
   const messages: ChatMessage[] = [
-    { role: "system", content: system("converse", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock, recipes: input.recipes }) },
+    { role: "system", content: system("converse", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock, recipes: input.recipes, equipment: input.equipment }) },
     { role: "user", content: ctx },
   ];
   return provider().completeJSON<ConverseResult>(messages, { temperature: 0.4 });

@@ -5,6 +5,7 @@ import { mkdirSync } from "node:fs";
 import type { GlossaryEntry } from "./glossary.js";
 import type { PantryItem } from "./pantry.js";
 import type { Recipe } from "./recipes.js";
+import type { EquipmentItem } from "./equipment.js";
 import type { Item } from "./services/assistantService.js";
 
 // Durable per-user store (SQLite). In the alpha there is a single user
@@ -74,6 +75,15 @@ CREATE TABLE IF NOT EXISTS glossary (
   PRIMARY KEY (user_id, term)
 );
 
+CREATE TABLE IF NOT EXISTS equipment (
+  user_id    INTEGER NOT NULL,
+  name       TEXT    NOT NULL COLLATE NOCASE,
+  state      TEXT    NOT NULL DEFAULT 'has',
+  source     TEXT,
+  updated_at TEXT    NOT NULL,
+  PRIMARY KEY (user_id, name)
+);
+
 CREATE TABLE IF NOT EXISTS recipes (
   user_id       INTEGER NOT NULL,
   name          TEXT    NOT NULL COLLATE NOCASE,
@@ -92,11 +102,12 @@ CREATE TABLE IF NOT EXISTS recipes (
 );
 `);
 
-// Migration: purchase_items.canonical (name-canonicalization step). Kept simple
-// with a guarded ALTER so existing DBs upgrade in place.
+// Migrations (guarded ALTERs so existing DBs upgrade in place).
 {
-  const cols = db.prepare("PRAGMA table_info(purchase_items)").all() as Array<{ name: string }>;
-  if (!cols.some((c) => c.name === "canonical")) db.exec("ALTER TABLE purchase_items ADD COLUMN canonical TEXT");
+  const piCols = db.prepare("PRAGMA table_info(purchase_items)").all() as Array<{ name: string }>;
+  if (!piCols.some((c) => c.name === "canonical")) db.exec("ALTER TABLE purchase_items ADD COLUMN canonical TEXT");
+  const pCols = db.prepare("PRAGMA table_info(pantry)").all() as Array<{ name: string }>;
+  if (!pCols.some((c) => c.name === "edible")) db.exec("ALTER TABLE pantry ADD COLUMN edible INTEGER NOT NULL DEFAULT 1");
 }
 
 const now = () => new Date().toISOString();
@@ -165,13 +176,14 @@ export const pantryRepo = {
   upsert(userId: number, item: PantryItem): void {
     if (!item?.name?.trim()) return;
     db.prepare(
-      `INSERT INTO pantry (user_id, name, category, state, source, confidence, updated_at)
-       VALUES (@user_id, @name, @category, @state, @source, @confidence, @updated_at)
+      `INSERT INTO pantry (user_id, name, category, state, source, confidence, edible, updated_at)
+       VALUES (@user_id, @name, @category, @state, @source, @confidence, @edible, @updated_at)
        ON CONFLICT(user_id, name) DO UPDATE SET
          category = excluded.category,
          state = excluded.state,
          source = excluded.source,
          confidence = excluded.confidence,
+         edible = excluded.edible,
          updated_at = excluded.updated_at`
     ).run({
       user_id: userId,
@@ -180,6 +192,7 @@ export const pantryRepo = {
       state: item.state === "missing" ? "missing" : "available",
       source: item.source ?? "user_confirmed",
       confidence: item.confidence ?? "high",
+      edible: item.edible === false ? 0 : 1,
       updated_at: now(),
     });
   },
@@ -192,11 +205,12 @@ export const pantryRepo = {
    */
   observeFromPurchase(userId: number, items: Item[]): void {
     const stmt = db.prepare(
-      `INSERT INTO pantry (user_id, name, category, state, source, confidence, updated_at)
-       VALUES (@user_id, @name, @category, 'available', 'observed', 'low', @updated_at)
+      `INSERT INTO pantry (user_id, name, category, state, source, confidence, edible, updated_at)
+       VALUES (@user_id, @name, @category, 'available', 'observed', 'low', @edible, @updated_at)
        ON CONFLICT(user_id, name) DO UPDATE SET
          category = excluded.category,
          state = 'available',
+         edible = excluded.edible,
          updated_at = excluded.updated_at
        WHERE pantry.source != 'user_confirmed'`
     );
@@ -204,7 +218,7 @@ export const pantryRepo = {
       for (const it of items) {
         const key = canon(it);
         if (!key) continue;
-        stmt.run({ user_id: userId, name: key, category: it.category ?? null, updated_at: now() });
+        stmt.run({ user_id: userId, name: key, category: it.category ?? null, edible: it.edible === false ? 0 : 1, updated_at: now() });
       }
     });
     tx();
@@ -212,9 +226,10 @@ export const pantryRepo = {
 
   /** Items currently believed to be at home (state = available). */
   list(userId: number): PantryItem[] {
-    return db
-      .prepare(`SELECT name, category, state, source, confidence, updated_at FROM pantry WHERE user_id = ? AND state = 'available' ORDER BY updated_at DESC`)
-      .all(userId) as PantryItem[];
+    const rows = db
+      .prepare(`SELECT name, category, state, source, confidence, edible, updated_at FROM pantry WHERE user_id = ? AND state = 'available' ORDER BY updated_at DESC`)
+      .all(userId) as Array<Omit<PantryItem, "edible"> & { edible: number }>;
+    return rows.map((r) => ({ ...r, edible: r.edible !== 0 }));
   },
 
   remove(userId: number, name: string): void {
@@ -308,6 +323,54 @@ export const glossaryRepo = {
     return db
       .prepare(`SELECT term, canonical, category, confidence, source FROM glossary WHERE user_id = ? ORDER BY updated_at DESC`)
       .all(userId) as GlossaryEntry[];
+  },
+};
+
+// --- Equipment (what the user can cook with) --------------------------------
+
+export const equipmentRepo = {
+  /** Upsert from an explicit user statement — user_confirmed always wins. */
+  upsert(userId: number, item: EquipmentItem): void {
+    if (!item?.name?.trim()) return;
+    db.prepare(
+      `INSERT INTO equipment (user_id, name, state, source, updated_at)
+       VALUES (@user_id, @name, @state, 'user_confirmed', @updated_at)
+       ON CONFLICT(user_id, name) DO UPDATE SET
+         state = excluded.state, source = 'user_confirmed', updated_at = excluded.updated_at`
+    ).run({
+      user_id: userId,
+      name: item.name.trim(),
+      state: item.state === "absent" ? "absent" : "has",
+      updated_at: now(),
+    });
+  },
+
+  /** Equipment named in a saved recipe is evidence the user has it (observed);
+   *  never overwrite an explicit user statement (e.g. "no oven"). */
+  observeFromRecipe(userId: number, names: string[]): void {
+    const stmt = db.prepare(
+      `INSERT INTO equipment (user_id, name, state, source, updated_at)
+       VALUES (@user_id, @name, 'has', 'observed', @updated_at)
+       ON CONFLICT(user_id, name) DO UPDATE SET updated_at = excluded.updated_at
+       WHERE equipment.source != 'user_confirmed'`
+    );
+    const tx = db.transaction(() => {
+      for (const raw of names ?? []) {
+        const name = String(raw ?? "").trim();
+        if (name) stmt.run({ user_id: userId, name, updated_at: now() });
+      }
+    });
+    tx();
+  },
+
+  list(userId: number): EquipmentItem[] {
+    return db
+      .prepare(`SELECT name, state, source FROM equipment WHERE user_id = ? ORDER BY updated_at DESC`)
+      .all(userId) as EquipmentItem[];
+  },
+
+  remove(userId: number, name: string): void {
+    db.prepare(`DELETE FROM equipment WHERE user_id = ? AND name = ?`).run(userId, name);
   },
 };
 

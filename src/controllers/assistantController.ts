@@ -13,7 +13,8 @@ import { matchOffer, type AdContext, type AdExclusions } from "../services/adSer
 import { detectLanguage } from "../lang.js";
 import type { GlossaryEntry } from "../glossary.js";
 import type { PantryItem } from "../pantry.js";
-import { DEFAULT_USER_ID, glossaryRepo, itemStatsRepo, pantryRepo, purchasesRepo, recipesRepo } from "../store.js";
+import type { EquipmentItem } from "../equipment.js";
+import { DEFAULT_USER_ID, equipmentRepo, glossaryRepo, itemStatsRepo, pantryRepo, purchasesRepo, recipesRepo } from "../store.js";
 
 // Controllers own the use-case flow: validate input, load prerequisites,
 // sequence domain primitives, and map failures to user-facing errors. Services
@@ -36,16 +37,18 @@ function stateOf(userId: number) {
     glossary: glossaryRepo.list(userId),
     restock: itemStatsRepo.dueForRestock(userId),
     recipes: recipesRepo.list(userId),
+    equipment: equipmentRepo.list(userId),
   };
 }
 
 /** Persist whatever the model learned this turn (stated by the user). */
 function persistLearned(
   userId: number,
-  learned: { glossary_learned?: GlossaryEntry[]; pantry_learned?: PantryItem[] }
+  learned: { glossary_learned?: GlossaryEntry[]; pantry_learned?: PantryItem[]; equipment_learned?: EquipmentItem[] }
 ): void {
   for (const g of learned.glossary_learned ?? []) glossaryRepo.upsert(userId, g);
   for (const p of learned.pantry_learned ?? []) pantryRepo.upsert(userId, p);
+  for (const e of learned.equipment_learned ?? []) equipmentRepo.upsert(userId, e);
 }
 
 // Trust firewall: the sponsored offer (MOCK) is picked only AFTER the neutral
@@ -92,6 +95,7 @@ export async function analyzeBasketFlow(req: Request, res: Response): Promise<vo
   const glossary = glossaryRepo.list(userId);
   const pantry = pantryRepo.list(userId);
   const recipes = recipesRepo.list(userId);
+  const equipment = equipmentRepo.list(userId);
 
   try {
     // 1) extract a product list; glossary lets canonical names match the user's terms
@@ -102,7 +106,7 @@ export async function analyzeBasketFlow(req: Request, res: Response): Promise<vo
     }
     // 2) evaluate the basket (type, verdict, dish, buy-list); saved recipes let
     //    the model note "this looks like it's for your usual <recipe>"
-    const analysis = await analyzeBasket(items, { language, glossary, pantry, recipes });
+    const analysis = await analyzeBasket(items, { language, glossary, pantry, recipes, equipment });
 
     // 3) persist: record the purchase (history), sync bought items into the
     //    pantry as observed evidence, and store anything the model learned.
@@ -154,6 +158,7 @@ export async function askFlow(req: Request, res: Response): Promise<void> {
   const pantry = pantryRepo.list(userId);
   const restock = itemStatsRepo.dueForRestock(userId);
   const recipes = recipesRepo.list(userId);
+  const equipment = equipmentRepo.list(userId);
   const itemCats = (items ?? []).map((i) => i.category);
   const itemNames = (items ?? []).map((i) => i.name);
   const language = detectLanguage(question);
@@ -168,7 +173,7 @@ export async function askFlow(req: Request, res: Response): Promise<void> {
       );
       res.json({ intent, result, sponsored, state: stateOf(userId) });
     } else {
-      const result = await suggestCook({ items, question, language, glossary, pantry, restock, recipes });
+      const result = await suggestCook({ items, question, language, glossary, pantry, restock, recipes, equipment });
       const dishNames = result.dishes?.map((d) => d.name).join(" ");
       const sponsored = attachSponsored(
         { categories: itemCats, terms: tokens(dishNames, ...itemNames) },
@@ -211,14 +216,19 @@ export async function chatFlow(req: Request, res: Response): Promise<void> {
   const pantry = pantryRepo.list(userId);
   const restock = itemStatsRepo.dueForRestock(userId);
   const recipes = recipesRepo.list(userId);
+  const equipment = equipmentRepo.list(userId);
   const language = detectLanguage(message);
 
   try {
-    const result = await converse({ items, history, message, language, glossary, pantry, restock, recipes });
+    const result = await converse({ items, history, message, language, glossary, pantry, restock, recipes, equipment });
     persistLearned(userId, result);
     // The model recognizes a recipe on its own (no button) and dedupes against
     // saved ones; persist it when present. recipesRepo.save upserts by name.
-    if (result.recipe_learned?.name?.trim()) recipesRepo.save(userId, result.recipe_learned, message);
+    if (result.recipe_learned?.name?.trim()) {
+      recipesRepo.save(userId, result.recipe_learned, message);
+      // Equipment named in a saved recipe is evidence the user has it.
+      equipmentRepo.observeFromRecipe(userId, result.recipe_learned.equipment ?? []);
+    }
     const dishNames = result.dishes?.map((d) => d.name).join(" ") ?? "";
     const sponsored = attachSponsored(
       {
@@ -258,6 +268,8 @@ export function feedbackFlow(req: Request, res: Response): void {
   if (remove) pantryRepo.remove(userId, remove);
   const recipeRemove: string | undefined = req.body?.recipeRemove;
   if (recipeRemove) recipesRepo.remove(userId, recipeRemove);
+  const equipmentRemove: string | undefined = req.body?.equipmentRemove;
+  if (equipmentRemove) equipmentRepo.remove(userId, equipmentRemove);
   res.json({ state: stateOf(userId) });
 }
 
