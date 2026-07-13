@@ -23,10 +23,10 @@ import { DEFAULT_USER_ID, glossaryRepo, itemStatsRepo, pantryRepo, purchasesRepo
 // glossary — the client no longer owns them. Each flow loads them as context,
 // and persists whatever the model learned this turn.
 
-// Single-user alpha; every row is still keyed by user_id for later multi-user.
+// user_id is resolved by the auth middleware (authAndUser) and attached to the
+// request; fall back to the default only if a route somehow bypassed it.
 function userIdOf(req: Request): number {
-  const raw = Number(req.body?.userId);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_USER_ID;
+  return req.userId ?? DEFAULT_USER_ID;
 }
 
 /** Current durable memory the client renders. */

@@ -24,6 +24,13 @@ db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 
 db.exec(`
+CREATE TABLE IF NOT EXISTS users (
+  id         INTEGER PRIMARY KEY,   -- external uid (e.g. Telegram id) used directly
+  provider   TEXT,                  -- 'telegram' | 'local' | ...
+  created_at TEXT    NOT NULL,
+  last_seen  TEXT    NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS purchases (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id     INTEGER NOT NULL,
@@ -86,6 +93,21 @@ CREATE TABLE IF NOT EXISTS recipes (
 `);
 
 const now = () => new Date().toISOString();
+
+// --- Users (registry of external uids, e.g. Telegram ids) --------------------
+
+export const usersRepo = {
+  /** Record a user on first contact and bump last_seen. Returns the uid. */
+  touch(userId: number, provider = "local"): number {
+    const t = now();
+    db.prepare(
+      `INSERT INTO users (id, provider, created_at, last_seen)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET last_seen = excluded.last_seen`
+    ).run(userId, provider, t, t);
+    return userId;
+  },
+};
 
 // --- Purchases (history) ----------------------------------------------------
 
