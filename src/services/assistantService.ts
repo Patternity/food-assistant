@@ -38,7 +38,8 @@ function system(task: string, opts: SystemOpts = {}): string {
 // the current input plus safe staple defaults only.
 
 export type Item = {
-  name: string;
+  name: string; // as read from the receipt/list
+  canonical: string; // brand/size-agnostic identity used to line up purchases & pantry
   qty: number | null;
   unit: string | null;
   category: string;
@@ -106,13 +107,16 @@ export async function extractItems(input: {
   text?: string;
   imageDataUrl?: string;
   language?: Lang;
+  glossary?: GlossaryEntry[];
 }): Promise<Item[]> {
   const messages: ChatMessage[] = [
-    { role: "system", content: system("extract-items", { language: input.language }) },
+    // Glossary is passed so the canonical names align with the user's own terms.
+    { role: "system", content: system("extract-items", { language: input.language, glossary: input.glossary }) },
     userTurn(input.text?.trim() || "Extract items from the attached image.", input.imageDataUrl),
   ];
   const out = await provider().completeJSON<{ items?: Item[] }>(messages, { temperature: 0.1 });
-  return out.items ?? [];
+  // Canonical is the identity used for pantry/cadence; fall back to the raw name.
+  return (out.items ?? []).map((it) => ({ ...it, canonical: (it.canonical || it.name || "").trim() }));
 }
 
 /** Evaluate a basket: type, verdict, one dish, buy-list, at-home staples. */

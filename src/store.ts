@@ -92,6 +92,13 @@ CREATE TABLE IF NOT EXISTS recipes (
 );
 `);
 
+// Migration: purchase_items.canonical (name-canonicalization step). Kept simple
+// with a guarded ALTER so existing DBs upgrade in place.
+{
+  const cols = db.prepare("PRAGMA table_info(purchase_items)").all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "canonical")) db.exec("ALTER TABLE purchase_items ADD COLUMN canonical TEXT");
+}
+
 const now = () => new Date().toISOString();
 
 // --- Users (registry of external uids, e.g. Telegram ids) --------------------
@@ -111,6 +118,10 @@ export const usersRepo = {
 
 // --- Purchases (history) ----------------------------------------------------
 
+// The canonical (brand/size-agnostic) name is the product's identity for pantry
+// and cadence; fall back to the raw name when extraction didn't provide one.
+const canon = (it: Item): string => (it.canonical || it.name || "").trim();
+
 export const purchasesRepo = {
   add(
     userId: number,
@@ -122,14 +133,14 @@ export const purchasesRepo = {
        VALUES (?, ?, ?, ?, ?)`
     );
     const insertItem = db.prepare(
-      `INSERT INTO purchase_items (purchase_id, user_id, name, category, qty, unit)
-       VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO purchase_items (purchase_id, user_id, name, canonical, category, qty, unit)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
     );
     const tx = db.transaction(() => {
       const res = insertPurchase.run(userId, now(), meta.source_type ?? null, meta.basket_kind ?? null, meta.raw_text ?? null);
       const purchaseId = Number(res.lastInsertRowid);
       for (const it of items) {
-        insertItem.run(purchaseId, userId, it.name, it.category ?? null, it.qty ?? null, it.unit ?? null);
+        insertItem.run(purchaseId, userId, it.name, canon(it), it.category ?? null, it.qty ?? null, it.unit ?? null);
       }
       return purchaseId;
     });
@@ -191,8 +202,9 @@ export const pantryRepo = {
     );
     const tx = db.transaction(() => {
       for (const it of items) {
-        if (!it?.name?.trim()) continue;
-        stmt.run({ user_id: userId, name: it.name.trim(), category: it.category ?? null, updated_at: now() });
+        const key = canon(it);
+        if (!key) continue;
+        stmt.run({ user_id: userId, name: key, category: it.category ?? null, updated_at: now() });
       }
     });
     tx();
@@ -238,13 +250,13 @@ export const itemStatsRepo = {
   ): RestockHint[] {
     const rows = db
       .prepare(
-        `SELECT pi.name AS name, p.ts AS ts
+        `SELECT COALESCE(NULLIF(TRIM(pi.canonical), ''), pi.name) AS name, p.ts AS ts
          FROM purchase_items pi JOIN purchases p ON p.id = pi.purchase_id
          WHERE pi.user_id = ? ORDER BY p.ts ASC`
       )
       .all(userId) as Array<{ name: string; ts: string }>;
 
-    // Group by a normalized name so slight label variations still line up.
+    // Group by the canonical name so brand/size label variations line up.
     const groups = new Map<string, { name: string; ts: number[] }>();
     for (const r of rows) {
       const key = r.name.toLowerCase().replace(/\s+/g, " ").trim();

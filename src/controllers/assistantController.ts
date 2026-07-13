@@ -94,8 +94,8 @@ export async function analyzeBasketFlow(req: Request, res: Response): Promise<vo
   const recipes = recipesRepo.list(userId);
 
   try {
-    // 1) extract a product list from the image and/or text
-    const items = await extractItems({ text, imageDataUrl, language });
+    // 1) extract a product list; glossary lets canonical names match the user's terms
+    const items = await extractItems({ text, imageDataUrl, language, glossary });
     if (!items.length) {
       res.status(422).json({ error: "Could not read any products. Try a clearer image or a text list." });
       return;
