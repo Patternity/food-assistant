@@ -60,6 +60,7 @@
       <div id="restock" class="pantry restock" hidden></div>
       <div id="recipes" class="pantry" hidden></div>
       <div id="equipment" class="pantry" hidden></div>
+      <div id="prefs" class="pantry" hidden></div>
       <textarea id="text" placeholder="Paste a basket as text, or type a question like 'what should I cook tonight?'"></textarea>
       <div class="controls">
         <input id="file" type="file" accept="image/*" hidden />
@@ -104,16 +105,31 @@
 
     let recipes = [];
     let equipment = [];
+    let prefs = [];
     function applyState(state) {
       if (!state) return;
       if (Array.isArray(state.glossary)) glossary = state.glossary;
       if (Array.isArray(state.pantry)) pantry = state.pantry;
       if (Array.isArray(state.recipes)) recipes = state.recipes;
       if (Array.isArray(state.equipment)) equipment = state.equipment;
+      if (Array.isArray(state.preferences)) prefs = state.preferences;
       renderPantry();
       renderRestock(state.restock);
       renderRecipes();
       renderEquipment();
+      renderPrefs();
+    }
+    function renderPrefs() {
+      const box = document.getElementById('prefs');
+      if (!prefs.length) { box.hidden = true; return; }
+      box.hidden = false;
+      box.innerHTML = '<b>⚙️ Предпочтения:</b> ' + prefs.map(p =>
+        '<span class="chip">' + esc(p.text) + ' <a href="#" class="rmp" data-n="' + esc(p.text) + '">×</a></span>').join(' ');
+      box.querySelectorAll('a.rmp').forEach(a => a.onclick = async (ev) => {
+        ev.preventDefault();
+        try { const rr = await post('/api/feedback', { preferenceRemove: a.dataset.n }); applyState(rr.state); }
+        catch (e) { toast(e.message); }
+      });
     }
     function renderEquipment() {
       const box = document.getElementById('equipment');
@@ -348,6 +364,7 @@
         if (result.recipe_learned && result.recipe_learned.name) toast('★ Сохранил рецепт: ' + result.recipe_learned.name);
         (result.equipment_learned || []).forEach(e => e && e.name && toast('🍳 Техника: ' + e.name + (e.state === 'absent' ? ' (нет)' : '')));
         if (result.forget_last_purchase) toast('↩︎ Забыл прошлый закуп — он не для тебя');
+        (result.preference_learned || []).forEach(p => p && p.text && toast('⚙️ Запомнил предпочтение: ' + p.text));
         showPantry = !!(result.dishes && result.dishes.length);  // show only when a dish is on the table
         dishTokens = showPantry ? dishIngredientTokens(result) : new Set();
         applyState(state);

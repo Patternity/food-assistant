@@ -39,6 +39,7 @@ omit or leave arrays empty otherwise):
   "pantry_learned": [ { "name": "string", "category": "string", "state": "available|missing" } ],
   "recipe_learned": { "name": "string", "method": "string", "equipment": ["string"], "required": ["string"], "helpful": ["string"], "optional": ["string"], "staples": ["string"], "side_dishes": ["string"], "substitutions": ["string"], "notes": "string" },
   "equipment_learned": [ { "name": "string", "state": "has|absent" } ],
+  "preference_learned": [ { "text": "string", "kind": "dislike|avoid|diet|household|other" } ],
   "forget_last_purchase": false
 }
 
@@ -74,3 +75,11 @@ ATTRIBUTION — if the user reveals that the basket they just showed was NOT for
 their own regular eating (it was for guests, a gift, the pet, a one-off), set
 "forget_last_purchase" to true so it is dropped from their history and pantry.
 Only when the user makes this clear.
+
+PREFERENCES — when the user states a STANDING wish or constraint (a lasting
+dislike, something never to suggest, a dietary limit, how many people they cook
+for, and the like — not a one-off choice for tonight), record it in
+"preference_learned" as a short first-person-neutral statement in the user's
+language. Check the USER PREFERENCES already listed and do not duplicate an
+existing one; only add what is new or changed. A momentary decision ("not that
+tonight") is NOT a standing preference — don't record it.

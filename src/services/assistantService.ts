@@ -7,6 +7,7 @@ import { pantryDirective, pantryLearnHint, type PantryItem } from "../pantry.js"
 import { restockDirective, type RestockHint } from "../restock.js";
 import { recipesDirective, type Recipe } from "../recipes.js";
 import { equipmentDirective, type EquipmentItem } from "../equipment.js";
+import { preferencesDirective, type Preference } from "../preferences.js";
 
 type SystemOpts = {
   language?: Lang;
@@ -15,6 +16,7 @@ type SystemOpts = {
   restock?: RestockHint[];
   recipes?: Recipe[];
   equipment?: EquipmentItem[];
+  preferences?: Preference[];
 };
 
 // Build the system message for a task: persona + task prompt + language rule +
@@ -31,6 +33,7 @@ function system(task: string, opts: SystemOpts = {}): string {
   s += restockDirective(opts.restock);
   s += recipesDirective(opts.recipes);
   s += equipmentDirective(opts.equipment);
+  s += preferencesDirective(opts.preferences);
   return s;
 }
 
@@ -84,6 +87,19 @@ export type BuySuggestion = {
 
 export type Turn = { role: "user" | "assistant"; text: string };
 
+/** Keep the most recent turns that fit within a character budget (~4 chars/token). */
+function windowByBudget(turns: Turn[], maxChars: number): Turn[] {
+  const out: Turn[] = [];
+  let total = 0;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const len = (turns[i].text?.length ?? 0) + 8; // + role label overhead
+    if (total + len > maxChars && out.length) break;
+    out.unshift(turns[i]);
+    total += len;
+  }
+  return out;
+}
+
 export type ConverseResult = {
   reply: string;
   dishes?: CookSuggestion["dishes"];
@@ -94,6 +110,7 @@ export type ConverseResult = {
   pantry_learned?: PantryItem[];
   recipe_learned?: Recipe;
   equipment_learned?: EquipmentItem[];
+  preference_learned?: Preference[];
   forget_last_purchase?: boolean;
 };
 
@@ -134,7 +151,7 @@ export async function extractItems(input: {
 /** Evaluate a basket: type, verdict, one dish, buy-list, at-home staples. */
 export async function analyzeBasket(
   items: Item[],
-  opts: { language?: Lang; glossary?: GlossaryEntry[]; pantry?: PantryItem[]; recipes?: Recipe[]; equipment?: EquipmentItem[] } = {}
+  opts: { language?: Lang; glossary?: GlossaryEntry[]; pantry?: PantryItem[]; recipes?: Recipe[]; equipment?: EquipmentItem[]; preferences?: Preference[] } = {}
 ): Promise<BasketAnalysis> {
   const messages: ChatMessage[] = [
     { role: "system", content: system("analyze-basket", opts) },
@@ -153,10 +170,11 @@ export async function suggestCook(input: {
   restock?: RestockHint[];
   recipes?: Recipe[];
   equipment?: EquipmentItem[];
+  preferences?: Preference[];
 }): Promise<CookSuggestion> {
   const ctx = contextBlock(input.items, input.question);
   const messages: ChatMessage[] = [
-    { role: "system", content: system("suggest-cook", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock, recipes: input.recipes, equipment: input.equipment }) },
+    { role: "system", content: system("suggest-cook", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock, recipes: input.recipes, equipment: input.equipment, preferences: input.preferences }) },
     { role: "user", content: ctx },
   ];
   return provider().completeJSON<CookSuggestion>(messages, { temperature: 0.5 });
@@ -194,9 +212,14 @@ export async function converse(input: {
   restock?: RestockHint[];
   recipes?: Recipe[];
   equipment?: EquipmentItem[];
+  preferences?: Preference[];
 }): Promise<ConverseResult> {
-  const history = (input.history ?? [])
-    .slice(-8)
+  // Dialog is short-term working context only — the durable facts (pantry,
+  // recipes, equipment, preferences, ...) are already extracted into memory. So
+  // we keep just a recent WINDOW bounded by a character budget (~a few hundred
+  // tokens), not a fixed turn count. Older turns fall off; nothing important
+  // depends on them.
+  const history = windowByBudget(input.history ?? [], 4000)
     .map((t) => `${t.role}: ${t.text}`)
     .join("\n");
   const ctx = [
@@ -207,7 +230,7 @@ export async function converse(input: {
     .filter(Boolean)
     .join("\n\n");
   const messages: ChatMessage[] = [
-    { role: "system", content: system("converse", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock, recipes: input.recipes, equipment: input.equipment }) },
+    { role: "system", content: system("converse", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock, recipes: input.recipes, equipment: input.equipment, preferences: input.preferences }) },
     { role: "user", content: ctx },
   ];
   return provider().completeJSON<ConverseResult>(messages, { temperature: 0.4 });

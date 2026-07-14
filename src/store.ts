@@ -6,6 +6,7 @@ import type { GlossaryEntry } from "./glossary.js";
 import type { PantryItem } from "./pantry.js";
 import type { Recipe } from "./recipes.js";
 import type { EquipmentItem } from "./equipment.js";
+import type { Preference } from "./preferences.js";
 import type { Item } from "./services/assistantService.js";
 
 // Durable per-user store (SQLite). In the alpha there is a single user
@@ -73,6 +74,16 @@ CREATE TABLE IF NOT EXISTS glossary (
   source     TEXT,
   updated_at TEXT    NOT NULL,
   PRIMARY KEY (user_id, term)
+);
+
+CREATE TABLE IF NOT EXISTS preferences (
+  user_id    INTEGER NOT NULL,
+  text       TEXT    NOT NULL COLLATE NOCASE,
+  kind       TEXT,
+  state      TEXT    NOT NULL DEFAULT 'active',
+  source     TEXT,
+  updated_at TEXT    NOT NULL,
+  PRIMARY KEY (user_id, text)
 );
 
 CREATE TABLE IF NOT EXISTS equipment (
@@ -349,6 +360,37 @@ export const glossaryRepo = {
     return db
       .prepare(`SELECT term, canonical, category, confidence, source FROM glossary WHERE user_id = ? ORDER BY updated_at DESC`)
       .all(userId) as GlossaryEntry[];
+  },
+};
+
+// --- Preferences (standing wishes / constraints) ----------------------------
+
+export const preferencesRepo = {
+  upsert(userId: number, pref: Preference): void {
+    if (!pref?.text?.trim()) return;
+    db.prepare(
+      `INSERT INTO preferences (user_id, text, kind, state, source, updated_at)
+       VALUES (@user_id, @text, @kind, @state, 'user_confirmed', @updated_at)
+       ON CONFLICT(user_id, text) DO UPDATE SET
+         kind = excluded.kind, state = excluded.state, source = 'user_confirmed', updated_at = excluded.updated_at`
+    ).run({
+      user_id: userId,
+      text: pref.text.trim(),
+      kind: pref.kind ?? null,
+      state: pref.state === "dropped" ? "dropped" : "active",
+      updated_at: now(),
+    });
+  },
+
+  /** Active preferences (dropped ones are kept but not applied). */
+  list(userId: number): Preference[] {
+    return db
+      .prepare(`SELECT text, kind, state, source FROM preferences WHERE user_id = ? AND state = 'active' ORDER BY updated_at DESC`)
+      .all(userId) as Preference[];
+  },
+
+  remove(userId: number, text: string): void {
+    db.prepare(`DELETE FROM preferences WHERE user_id = ? AND text = ?`).run(userId, text);
   },
 };
 
