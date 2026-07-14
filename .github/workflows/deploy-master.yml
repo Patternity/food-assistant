@@ -1,0 +1,116 @@
+name: CI/CD Deploy (master)
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-master
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Typecheck & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npx tsc -p tsconfig.json --noEmit
+      - run: npm run build
+
+  build:
+    name: Build image
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -f docker/Dockerfile -t "food-assistant:${GITHUB_SHA}" .
+      - name: Pack image artifact
+        run: docker save "food-assistant:${GITHUB_SHA}" | gzip > "food-assistant-${GITHUB_SHA}.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ github.sha }}
+          path: food-assistant-${{ github.sha }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    name: Deploy to server
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: image-${{ github.sha }}
+          path: .
+
+      - name: Configure SSH
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          if [ -n "${DEPLOY_KNOWN_HOSTS:-}" ]; then
+            printf '%s\n' "${DEPLOY_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          else
+            ssh-keyscan -p "${DEPLOY_PORT:-22}" "${DEPLOY_HOST}" > ~/.ssh/known_hosts 2>/dev/null
+          fi
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Upload release files
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -p "${PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" "mkdir -p '${DEPLOY_PATH}'"
+          scp -P "${PORT}" "food-assistant-${GITHUB_SHA}.tar.gz" \
+            docker-compose.prod.yml \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/"
+
+      - name: Deploy
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          PORT="${DEPLOY_PORT:-22}"
+          ssh -p "${PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "APP_DIR='${DEPLOY_PATH}' SHA='${GITHUB_SHA}' bash -s" <<'EOSSH'
+          set -euo pipefail
+          cd "${APP_DIR}"
+          if [ ! -f .env ]; then echo "ERROR: ${APP_DIR}/.env is missing" >&2; exit 1; fi
+
+          gunzip -c "food-assistant-${SHA}.tar.gz" | docker load
+
+          # Ensure the shared edge network exists (idempotent).
+          docker network inspect edge >/dev/null 2>&1 || docker network create edge
+
+          export FOOD_IMAGE="food-assistant:${SHA}"
+          docker compose -f docker-compose.prod.yml up -d --no-build --force-recreate --remove-orphans
+
+          # Tag :latest so a manual `docker compose up --no-build` works too.
+          docker tag "${FOOD_IMAGE}" food-assistant:latest
+
+          rm -f "food-assistant-${SHA}.tar.gz"
+          docker image prune -f >/dev/null 2>&1 || true
+          EOSSH
