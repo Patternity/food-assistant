@@ -1,82 +1,63 @@
-# Production deployment
+# Deployment
 
-The Food Assistant runs as a single container on the same host as the Telegram
-bot, with its own auto-deploy pipeline that mirrors the bot's: GitHub Actions
-builds the image, ships it as a `docker save` tarball over SSH, and runs
-`docker compose` on the server. No registry.
+Food Assistant runs as a **service inside the Telegram bot's docker-compose
+stack** (the same pattern as dash-pay), not as a standalone deploy. This repo's
+only CI job is to **publish the image to GHCR**; the bot stack pulls and runs it.
 
-## Topology
+## Pipeline
 
 ```
-Telegram bot stack ──(docker network: edge)──▶ food-assistant:3000
-                                                └─ SQLite on volume `fooddata` (/data)
+push to master ─▶ GitHub Actions (publish-image.yml)
+                    └─ build docker/Dockerfile ─▶ push ghcr.io/patternity/food-assistant:{latest,sha}
+
+bot deploy (content-platform) ─▶ docker pull ghcr.io/patternity/food-assistant:latest
+                                 └─ docker compose --profile food up   (service `food-assistant`)
 ```
 
-The bot reaches the service by name over a **shared external docker network**
-`edge`. The service is not exposed publicly — only the bot talks to it.
+The bot reaches the service by name on the compose network at
+`http://food-assistant:3000`. Nothing is exposed publicly.
 
-## 1. One-time server setup
+## GHCR access
+
+- The package `ghcr.io/patternity/food-assistant` is published by this repo's
+  Actions via `GITHUB_TOKEN` (no extra secrets).
+- The **server must be able to pull it**: either make the package **public**
+  (Packages → package → visibility), or `docker login ghcr.io` on the host with a
+  PAT that has `read:packages`.
+
+## Bot-side wiring (content-platform)
+
+`docker-compose.prod.yml` defines a `food-assistant` service under
+`profiles: ["food"]` that pulls the image and reads its env from `.env.food`.
+
+1. On the server, next to the bot's `.env`, create `.env.food`:
+
+   ```
+   LLM_PROVIDER=openai-compatible
+   LLM_API_KEY=sk-or-...            # OpenRouter key (secret)
+   LLM_BASE_URL=https://openrouter.ai/api/v1
+   LLM_MODEL=openai/gpt-4o-mini
+   LLM_VISION_MODEL=openai/gpt-4o-mini
+   LLM_DEFAULT_LANGUAGE=ru
+   SERVICE_TOKEN=<long-random-secret>
+   ```
+
+2. In the bot's main `.env`:
+
+   ```
+   FOOD_ENABLED=true
+   FOOD_SERVICE_URL=http://food-assistant:3000
+   FOOD_SERVICE_TOKEN=<same as SERVICE_TOKEN above>
+   ```
+
+The bot's deploy pulls the image and starts the `food` profile automatically
+when `.env.food` is present. Data (the SQLite DB) lives on the `fooddata` volume
+at `/data`.
+
+## Run standalone (local/testing)
 
 ```bash
-# shared network for bot <-> service discovery
-docker network create edge
-
-# deploy dir + secret env (NOT in git)
-sudo mkdir -p /opt/food-assistant && cd /opt/food-assistant
-cp /path/to/.env.prod.example .env
-nano .env      # set LLM_API_KEY (OpenRouter sk-or-...) and SERVICE_TOKEN
+docker build -f docker/Dockerfile -t food-assistant .
+docker run --rm -p 3000:3000 --env-file .env -v fooddata:/data food-assistant
+# health: curl localhost:3000/api/health
 ```
-
-`SERVICE_TOKEN` must be a long random secret; the bot uses the same value as
-`FOOD_SERVICE_TOKEN`.
-
-## 2. GitHub Actions secrets (this repo)
-
-Same set as the bot repo (point them at the same host, a different `DEPLOY_PATH`):
-
-| Secret | Value |
-|---|---|
-| `DEPLOY_HOST` | server host/IP |
-| `DEPLOY_USER` | ssh user |
-| `DEPLOY_PORT` | ssh port (default 22) |
-| `DEPLOY_SSH_KEY` | private key (ed25519) authorized on the server |
-| `DEPLOY_KNOWN_HOSTS` | optional; else auto `ssh-keyscan` |
-| `DEPLOY_PATH` | e.g. `/opt/food-assistant` |
-
-Push to `master` → the `CI/CD Deploy (master)` workflow builds, ships, and runs
-the container. The workflow creates the `edge` network if missing.
-
-## 3. Wire the bot to the service
-
-In the bot stack (content-platform):
-
-- put the `bot` service on the `edge` network (the bot repo's
-  `docker-compose.prod.yml` declares it — deploy with `--profile food` or keep it
-  always on);
-- set in the bot's `.env`:
-
-```
-FOOD_ENABLED=true
-FOOD_SERVICE_URL=http://food-assistant:3000
-FOOD_SERVICE_TOKEN=<same as this service's SERVICE_TOKEN>
-```
-
-## 4. Verify
-
-```bash
-cd /opt/food-assistant
-docker compose -f docker-compose.prod.yml ps
-docker compose -f docker-compose.prod.yml exec food-assistant \
-  wget -qO- http://localhost:3000/api/health      # {"ok":true,"configured":true,...}
-# from the bot container:
-docker compose -f <bot-compose> exec bot \
-  python -c "import urllib.request as u; print(u.urlopen('http://food-assistant:3000/api/health').read())"
-```
-
-## Notes
-
-- Data (the SQLite DB) lives on the `fooddata` volume at `/data`; the image's
-  `data/` (mock offers, example baskets) is separate and read-only.
-- `LLM_API_KEY` and `SERVICE_TOKEN` live only in the server `.env` — never in git.
-- Backups: `docker run --rm -v food-assistant_fooddata:/d -v "$PWD":/b alpine \
-  cp /d/food-assistant.sqlite /b/` (or `sqlite3 .backup`).
