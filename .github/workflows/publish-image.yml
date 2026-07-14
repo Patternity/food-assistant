@@ -1,0 +1,55 @@
+name: Publish image (GHCR)
+
+# Builds the service image and publishes it to GHCR. The image is consumed by
+# the Telegram bot stack (content-platform), which runs food-assistant as a
+# service in its own docker-compose (like dash-pay). No deploy secrets here —
+# GHCR push uses the built-in GITHUB_TOKEN.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-master
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/patternity/food-assistant
+
+jobs:
+  test:
+    name: Typecheck & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npx tsc -p tsconfig.json --noEmit
+      - run: npm run build
+
+  publish:
+    name: Build & push image
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
