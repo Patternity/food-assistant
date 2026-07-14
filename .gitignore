@@ -9,3 +9,6 @@ data/uploads/
 *.sqlite-journal
 *.sqlite-wal
 *.sqlite-shm
+
+# Claude Code local settings (never commit — may contain keys in allowlist)
+.claude/
