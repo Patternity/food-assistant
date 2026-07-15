@@ -103,6 +103,14 @@ CREATE TABLE IF NOT EXISTS token_usage (
   PRIMARY KEY (scope, key)
 );
 
+-- Runtime settings (key/value), editable via the admin API. Overrides the env
+-- defaults so an operator can tune budgets without redeploying the container.
+CREATE TABLE IF NOT EXISTS settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 -- One live session per user. The bot signals open/close; a session also self-
 -- closes when its token budget is spent or after an inactivity TTL.
 CREATE TABLE IF NOT EXISTS sessions (
@@ -181,6 +189,28 @@ export const usageRepo = {
          tokens = token_usage.tokens + excluded.tokens,
          updated_at = excluded.updated_at`
     ).run(scope, key, tokens, now());
+  },
+};
+
+// --- Settings (runtime config, admin-editable) ------------------------------
+
+export const settingsRepo = {
+  /** All settings as a plain map (missing keys simply absent). */
+  all(): Record<string, string> {
+    const rows = db.prepare(`SELECT key, value FROM settings`).all() as Array<{ key: string; value: string }>;
+    return Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  },
+
+  get(key: string): string | undefined {
+    const row = db.prepare(`SELECT value FROM settings WHERE key = ?`).get(key) as { value: string } | undefined;
+    return row?.value;
+  },
+
+  set(key: string, value: string): void {
+    db.prepare(
+      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+    ).run(key, value, now());
   },
 };
 

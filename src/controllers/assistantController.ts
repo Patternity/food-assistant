@@ -11,7 +11,7 @@ import {
   type Turn,
 } from "../services/assistantService.js";
 import { matchOffer, type AdContext, type AdExclusions } from "../services/adService.js";
-import { budgetDirective, budgetHardStopText, dayKey, SESSION_TTL_MS, viewFromUsage, WARN_RATIO, type BudgetView } from "../budget.js";
+import { budgetConfig, budgetDirective, budgetHardStopText, dayKey, setBudgetConfig, viewFromUsage, type BudgetView } from "../budget.js";
 import { withUsage } from "../usage.js";
 import { detectLanguage, type Lang } from "../lang.js";
 import type { GlossaryEntry } from "../glossary.js";
@@ -108,7 +108,7 @@ type BudgetGate =
  */
 function openBudget(req: Request, res: Response, language: Lang): BudgetGate {
   const userId = userIdOf(req);
-  const session = sessionsRepo.resolve(userId, { forceNew: forceNewSession(req), ttlMs: SESSION_TTL_MS });
+  const session = sessionsRepo.resolve(userId, { forceNew: forceNewSession(req), ttlMs: budgetConfig().sessionTtlMs });
   const budget = budgetOf(userId, session.tokens);
   if (budget.exhausted) {
     // Shaped so existing clients render it without special-casing: `reply` at the
@@ -124,7 +124,7 @@ function openBudget(req: Request, res: Response, language: Lang): BudgetGate {
 function settleBudget(userId: number, tokensSpent: number, payload: Record<string, unknown>) {
   sessionsRepo.add(userId, tokensSpent);
   usageRepo.add("day", dayKey(userId), tokensSpent);
-  return { ...payload, budget: budgetOf(userId, sessionsRepo.peek(userId, SESSION_TTL_MS)) };
+  return { ...payload, budget: budgetOf(userId, sessionsRepo.peek(userId, budgetConfig().sessionTtlMs)) };
 }
 
 function tokens(...parts: (string | undefined)[]): string[] {
@@ -453,7 +453,7 @@ export function stateFlow(req: Request, res: Response): void {
 export function usageFlow(req: Request, res: Response): void {
   const userId = userIdOf(req);
   // Read-only: peek the active session without opening or extending one.
-  const view = budgetOf(userId, sessionsRepo.peek(userId, SESSION_TTL_MS));
+  const view = budgetOf(userId, sessionsRepo.peek(userId, budgetConfig().sessionTtlMs));
   // remaining is null when a budget is disabled (limit 0 = unlimited).
   const remaining = (b: { used: number; limit: number }) => (b.limit > 0 ? Math.max(0, b.limit - b.used) : null);
   const s = stateOf(userId);
@@ -463,7 +463,7 @@ export function usageFlow(req: Request, res: Response): void {
       day: { ...view.day, remaining: remaining(view.day) },
       low: view.low,
       exhausted: view.exhausted,
-      warnRatio: WARN_RATIO,
+      warnRatio: budgetConfig().warnRatio,
     },
     stats: {
       purchases: purchasesRepo.count(userId),
@@ -475,6 +475,25 @@ export function usageFlow(req: Request, res: Response): void {
       restockDue: s.restock.length,
     },
   });
+}
+
+/**
+ * GET /api/config — the effective budget config (env defaults overridden by any
+ * runtime settings). Read-only. Intended for the bot's admin panel to render.
+ */
+export function configFlow(_req: Request, res: Response): void {
+  res.json({ budget: budgetConfig() });
+}
+
+/**
+ * PUT /api/config — update budget config at runtime (admin). Accepts a partial
+ * body { sessionBudget?, dailyBudget?, warnRatio?, sessionTtlHours? }; only valid
+ * fields are applied. Auth is the service token (the bot gates who is an admin).
+ * Returns the new effective config.
+ */
+export function updateConfigFlow(req: Request, res: Response): void {
+  const patch = (req.body ?? {}) as Record<string, unknown>;
+  res.json({ budget: setBudgetConfig(patch) });
 }
 
 /**
@@ -490,9 +509,9 @@ export function sessionFlow(req: Request, res: Response): void {
   if (action === "close") {
     sessionsRepo.close(userId);
   } else {
-    sessionsRepo.resolve(userId, { forceNew: true, ttlMs: SESSION_TTL_MS });
+    sessionsRepo.resolve(userId, { forceNew: true, ttlMs: budgetConfig().sessionTtlMs });
   }
-  res.json({ action: action === "close" ? "close" : "open", budget: budgetOf(userId, sessionsRepo.peek(userId, SESSION_TTL_MS)) });
+  res.json({ action: action === "close" ? "close" : "open", budget: budgetOf(userId, sessionsRepo.peek(userId, budgetConfig().sessionTtlMs)) });
 }
 
 /** GET /api/history — recent purchases (basket history). */
