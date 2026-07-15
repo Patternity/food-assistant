@@ -17,6 +17,9 @@ type SystemOpts = {
   recipes?: Recipe[];
   equipment?: EquipmentItem[];
   preferences?: Preference[];
+  // Pre-rendered directive (from budget.ts) asking the model to warn + summarize
+  // when the session's token budget is nearly spent. "" / undefined when not low.
+  budgetNote?: string;
 };
 
 // Build the system message for a task: persona + task prompt + language rule +
@@ -34,6 +37,7 @@ function system(task: string, opts: SystemOpts = {}): string {
   s += recipesDirective(opts.recipes);
   s += equipmentDirective(opts.equipment);
   s += preferencesDirective(opts.preferences);
+  if (opts.budgetNote) s += opts.budgetNote;
   return s;
 }
 
@@ -62,6 +66,7 @@ export type BasketAnalysis = {
   questions: string[];
   glossary_learned?: GlossaryEntry[];
   pantry_learned?: PantryItem[];
+  session_summary?: string; // filled only when the token budget is low (see budget.ts)
 };
 
 export type CookSuggestion = {
@@ -75,6 +80,7 @@ export type CookSuggestion = {
     missing_required: string[];
   }>;
   questions: string[];
+  session_summary?: string;
 };
 
 export type BuySuggestion = {
@@ -83,6 +89,7 @@ export type BuySuggestion = {
   buy: string[];
   likely_at_home: string[];
   questions: string[];
+  session_summary?: string;
 };
 
 export type Turn = { role: "user" | "assistant"; text: string };
@@ -112,6 +119,7 @@ export type ConverseResult = {
   equipment_learned?: EquipmentItem[];
   preference_learned?: Preference[];
   forget_last_purchase?: boolean;
+  session_summary?: string;
 };
 
 const provider = () => getProvider();
@@ -151,7 +159,7 @@ export async function extractItems(input: {
 /** Evaluate a basket: type, verdict, one dish, buy-list, at-home staples. */
 export async function analyzeBasket(
   items: Item[],
-  opts: { language?: Lang; glossary?: GlossaryEntry[]; pantry?: PantryItem[]; recipes?: Recipe[]; equipment?: EquipmentItem[]; preferences?: Preference[] } = {}
+  opts: { language?: Lang; glossary?: GlossaryEntry[]; pantry?: PantryItem[]; recipes?: Recipe[]; equipment?: EquipmentItem[]; preferences?: Preference[]; budgetNote?: string } = {}
 ): Promise<BasketAnalysis> {
   const messages: ChatMessage[] = [
     { role: "system", content: system("analyze-basket", opts) },
@@ -171,10 +179,11 @@ export async function suggestCook(input: {
   recipes?: Recipe[];
   equipment?: EquipmentItem[];
   preferences?: Preference[];
+  budgetNote?: string;
 }): Promise<CookSuggestion> {
   const ctx = contextBlock(input.items, input.question);
   const messages: ChatMessage[] = [
-    { role: "system", content: system("suggest-cook", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock, recipes: input.recipes, equipment: input.equipment, preferences: input.preferences }) },
+    { role: "system", content: system("suggest-cook", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock, recipes: input.recipes, equipment: input.equipment, preferences: input.preferences, budgetNote: input.budgetNote }) },
     { role: "user", content: ctx },
   ];
   return provider().completeJSON<CookSuggestion>(messages, { temperature: 0.5 });
@@ -188,10 +197,11 @@ export async function suggestBuy(input: {
   glossary?: GlossaryEntry[];
   pantry?: PantryItem[];
   restock?: RestockHint[];
+  budgetNote?: string;
 }): Promise<BuySuggestion> {
   const ctx = contextBlock(input.items, input.question);
   const messages: ChatMessage[] = [
-    { role: "system", content: system("suggest-buy", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock }) },
+    { role: "system", content: system("suggest-buy", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock, budgetNote: input.budgetNote }) },
     { role: "user", content: ctx },
   ];
   return provider().completeJSON<BuySuggestion>(messages, { temperature: 0.5 });
@@ -213,6 +223,7 @@ export async function converse(input: {
   recipes?: Recipe[];
   equipment?: EquipmentItem[];
   preferences?: Preference[];
+  budgetNote?: string;
 }): Promise<ConverseResult> {
   // Dialog is short-term working context only — the durable facts (pantry,
   // recipes, equipment, preferences, ...) are already extracted into memory. So
@@ -230,7 +241,7 @@ export async function converse(input: {
     .filter(Boolean)
     .join("\n\n");
   const messages: ChatMessage[] = [
-    { role: "system", content: system("converse", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock, recipes: input.recipes, equipment: input.equipment, preferences: input.preferences }) },
+    { role: "system", content: system("converse", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock, recipes: input.recipes, equipment: input.equipment, preferences: input.preferences, budgetNote: input.budgetNote }) },
     { role: "user", content: ctx },
   ];
   return provider().completeJSON<ConverseResult>(messages, { temperature: 0.4 });

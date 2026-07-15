@@ -11,7 +11,9 @@ import {
   type Turn,
 } from "../services/assistantService.js";
 import { matchOffer, type AdContext, type AdExclusions } from "../services/adService.js";
-import { detectLanguage } from "../lang.js";
+import { budgetDirective, budgetHardStopText, readBudget, recordUsage, today, WARN_RATIO, type BudgetView } from "../budget.js";
+import { withUsage } from "../usage.js";
+import { detectLanguage, type Lang } from "../lang.js";
 import type { GlossaryEntry } from "../glossary.js";
 import type { PantryItem } from "../pantry.js";
 import type { EquipmentItem } from "../equipment.js";
@@ -72,6 +74,53 @@ function attachSponsored(
   return matchOffer(adCtx);
 }
 
+// The session id is supplied by the orchestrator (the bot) so the session
+// budget tracks one conversation. When absent (direct callers / the web UI) we
+// fall back to one rolling session per user-day, so the guard still applies.
+function sessionIdOf(req: Request, userId: number): string {
+  const raw = req.body?.sessionId ?? req.get("X-Session-Id");
+  const s = String(raw ?? "").trim();
+  return s || `u${userId}:${today()}`;
+}
+
+// Error a flow can throw INSIDE the usage scope to return a specific HTTP status
+// (e.g. 422 "couldn't read products") — mapped to the response in fail().
+class HttpError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+  }
+}
+
+type BudgetGate =
+  | { blocked: true }
+  | { blocked: false; userId: number; sessionId: string; budgetNote: string };
+
+/**
+ * Open the token-budget gate for an LLM turn. If a budget is fully spent, the
+ * response is sent here (a canned message, no LLM call) and the caller stops.
+ * Otherwise it returns the ids plus a `budgetNote` to fold into the prompt
+ * (warn + summarize) when the budget is merely low.
+ */
+function openBudget(req: Request, res: Response, language: Lang): BudgetGate {
+  const userId = userIdOf(req);
+  const sessionId = sessionIdOf(req, userId);
+  const budget = readBudget(userId, sessionId);
+  if (budget.exhausted) {
+    // Shaped so existing clients render it without special-casing: `reply` at the
+    // top level, and an intent/result mirror so a message-style client shows it.
+    const message = budgetHardStopText(budget, language);
+    res.json({ blocked: true, intent: "chat", reply: message, result: { reply: message }, budget, state: stateOf(userId) });
+    return { blocked: true };
+  }
+  return { blocked: false, userId, sessionId, budgetNote: budgetDirective(budget) };
+}
+
+/** Charge the tokens spent this turn and attach the fresh budget view. */
+function settleBudget(userId: number, sessionId: string, tokensSpent: number, payload: Record<string, unknown>) {
+  recordUsage(userId, sessionId, tokensSpent);
+  return { ...payload, budget: readBudget(userId, sessionId) as BudgetView };
+}
+
 function tokens(...parts: (string | undefined)[]): string[] {
   return parts
     .filter(Boolean)
@@ -100,51 +149,56 @@ export async function analyzeBasketFlow(req: Request, res: Response): Promise<vo
   // Reply in the user's language. With an image and little/no text, default
   // (Russian) applies; any typed text overrides it.
   const language = detectLanguage(text);
-  const userId = userIdOf(req);
+  const gate = openBudget(req, res, language);
+  if (gate.blocked) return;
+  const { userId, sessionId, budgetNote } = gate;
+
   const glossary = glossaryRepo.list(userId);
   const pantry = pantryRepo.list(userId);
   const recipes = recipesRepo.list(userId);
   const equipment = equipmentRepo.list(userId);
   const preferences = preferencesRepo.list(userId);
+  const exclusions: AdExclusions | undefined = req.body?.adExclusions;
+  const seen: string[] | undefined = req.body?.adSeen;
 
   try {
-    // 1) extract a product list; glossary lets canonical names match the user's terms
-    const items = await extractItems({ text, imageDataUrl, language, glossary });
-    if (!items.length) {
-      res.status(422).json({ error: "Could not read any products. Try a clearer image or a text list." });
-      return;
-    }
-    // 2) evaluate the basket (type, verdict, dish, buy-list); saved recipes let
-    //    the model note "this looks like it's for your usual <recipe>"
-    const analysis = await analyzeBasket(items, { language, glossary, pantry, recipes, equipment, preferences });
+    const { result: payload, tokens: spent } = await withUsage(async () => {
+      // 1) extract a product list; glossary lets canonical names match the user's terms
+      const items = await extractItems({ text, imageDataUrl, language, glossary });
+      if (!items.length) {
+        throw new HttpError(422, "Could not read any products. Try a clearer image or a text list.");
+      }
+      // 2) evaluate the basket (type, verdict, dish, buy-list); saved recipes let
+      //    the model note "this looks like it's for your usual <recipe>"
+      const analysis = await analyzeBasket(items, { language, glossary, pantry, recipes, equipment, preferences, budgetNote });
 
-    // 3) persist — but only if this basket is the user's own consumption.
-    //    If it's for guests / a gift / the pet / a one-off, we simply don't save
-    //    it, so it never pollutes history, pantry, or cadence.
-    const forSelf = !analysis.attribution || analysis.attribution === "self";
-    if (forSelf) {
-      purchasesRepo.add(
-        userId,
-        { source_type: imageDataUrl ? "image" : "text", basket_kind: analysis.basket_kind, raw_text: text },
-        items
+      // 3) persist — but only if this basket is the user's own consumption.
+      //    If it's for guests / a gift / the pet / a one-off, we simply don't save
+      //    it, so it never pollutes history, pantry, or cadence.
+      const forSelf = !analysis.attribution || analysis.attribution === "self";
+      if (forSelf) {
+        purchasesRepo.add(
+          userId,
+          { source_type: imageDataUrl ? "image" : "text", basket_kind: analysis.basket_kind, raw_text: text },
+          items
+        );
+        pantryRepo.observeFromPurchase(userId, items);
+        persistLearned(userId, analysis);
+      }
+
+      // 4) MOCK ad, chosen after the answer, gated by user exclusions
+      const sponsored = attachSponsored(
+        {
+          categories: items.map((i) => i.category),
+          terms: tokens(analysis.dish, analysis.buy.join(" "), ...items.map((i) => i.name)),
+        },
+        exclusions,
+        seen
       );
-      pantryRepo.observeFromPurchase(userId, items);
-      persistLearned(userId, analysis);
-    }
 
-    // 4) MOCK ad, chosen after the answer, gated by user exclusions
-    const exclusions: AdExclusions | undefined = req.body?.adExclusions;
-    const seen: string[] | undefined = req.body?.adSeen;
-    const sponsored = attachSponsored(
-      {
-        categories: items.map((i) => i.category),
-        terms: tokens(analysis.dish, analysis.buy.join(" "), ...items.map((i) => i.name)),
-      },
-      exclusions,
-      seen
-    );
-
-    res.json({ items, analysis, sponsored, saved: forSelf, state: stateOf(userId) });
+      return { items, analysis, sponsored, saved: forSelf, state: stateOf(userId) };
+    });
+    res.json(settleBudget(userId, sessionId, spent, payload));
   } catch (err) {
     fail(res, err);
   }
@@ -164,10 +218,13 @@ export async function askFlow(req: Request, res: Response): Promise<void> {
   }
 
   const intent = forced ?? classifyIntent(question ?? "");
+  const language = detectLanguage(question);
+  const gate = openBudget(req, res, language);
+  if (gate.blocked) return;
+  const { userId, sessionId, budgetNote } = gate;
 
   const exclusions: AdExclusions | undefined = req.body?.adExclusions;
   const seen: string[] | undefined = req.body?.adSeen;
-  const userId = userIdOf(req);
   const glossary = glossaryRepo.list(userId);
   const pantry = pantryRepo.list(userId);
   const restock = itemStatsRepo.dueForRestock(userId);
@@ -176,27 +233,28 @@ export async function askFlow(req: Request, res: Response): Promise<void> {
   const preferences = preferencesRepo.list(userId);
   const itemCats = (items ?? []).map((i) => i.category);
   const itemNames = (items ?? []).map((i) => i.name);
-  const language = detectLanguage(question);
 
   try {
-    if (intent === "buy") {
-      const result = await suggestBuy({ items, question, language, glossary, pantry, restock });
-      const sponsored = attachSponsored(
-        { categories: itemCats, terms: tokens(result.for_dish, result.buy.join(" "), ...itemNames) },
-        exclusions,
-        seen
-      );
-      res.json({ intent, result, sponsored, state: stateOf(userId) });
-    } else {
-      const result = await suggestCook({ items, question, language, glossary, pantry, restock, recipes, equipment, preferences });
+    const { result: payload, tokens: spent } = await withUsage(async () => {
+      if (intent === "buy") {
+        const result = await suggestBuy({ items, question, language, glossary, pantry, restock, budgetNote });
+        const sponsored = attachSponsored(
+          { categories: itemCats, terms: tokens(result.for_dish, result.buy.join(" "), ...itemNames) },
+          exclusions,
+          seen
+        );
+        return { intent, result, sponsored, state: stateOf(userId) };
+      }
+      const result = await suggestCook({ items, question, language, glossary, pantry, restock, recipes, equipment, preferences, budgetNote });
       const dishNames = result.dishes?.map((d) => d.name).join(" ");
       const sponsored = attachSponsored(
         { categories: itemCats, terms: tokens(dishNames, ...itemNames) },
         exclusions,
         seen
       );
-      res.json({ intent: "cook", result, sponsored, state: stateOf(userId) });
-    }
+      return { intent: "cook", result, sponsored, state: stateOf(userId) };
+    });
+    res.json(settleBudget(userId, sessionId, spent, payload));
   } catch (err) {
     fail(res, err);
   }
@@ -224,43 +282,49 @@ export async function chatFlow(req: Request, res: Response): Promise<void> {
     return;
   }
 
+  const language = detectLanguage(message);
+  const gate = openBudget(req, res, language);
+  if (gate.blocked) return;
+  const { userId, sessionId, budgetNote } = gate;
+
   const exclusions: AdExclusions | undefined = req.body?.adExclusions;
   const seen: string[] | undefined = req.body?.adSeen;
-  const userId = userIdOf(req);
   const glossary = glossaryRepo.list(userId);
   const pantry = pantryRepo.list(userId);
   const restock = itemStatsRepo.dueForRestock(userId);
   const recipes = recipesRepo.list(userId);
   const equipment = equipmentRepo.list(userId);
   const preferences = preferencesRepo.list(userId);
-  const language = detectLanguage(message);
 
   try {
-    const result = await converse({ items, history, message, language, glossary, pantry, restock, recipes, equipment, preferences });
-    persistLearned(userId, result);
-    // The model recognizes a recipe on its own (no button) and dedupes against
-    // saved ones; persist it when present. recipesRepo.save upserts by name.
-    if (result.recipe_learned?.name?.trim()) {
-      recipesRepo.save(userId, result.recipe_learned, message);
-      // Equipment named in a saved recipe is evidence the user has it.
-      equipmentRepo.observeFromRecipe(userId, result.recipe_learned.equipment ?? []);
-    }
-    // The user revealed the last basket wasn't theirs -> drop it from history and
-    // roll back the pantry it observed.
-    if (result.forget_last_purchase) {
-      const names = purchasesRepo.deleteLast(userId);
-      pantryRepo.removeObserved(userId, names);
-    }
-    const dishNames = result.dishes?.map((d) => d.name).join(" ") ?? "";
-    const sponsored = attachSponsored(
-      {
-        categories: items.map((i) => i.category),
-        terms: tokens(dishNames, (result.buy ?? []).join(" "), ...items.map((i) => i.name)),
-      },
-      exclusions,
-      seen
-    );
-    res.json({ result, sponsored, state: stateOf(userId) });
+    const { result: payload, tokens: spent } = await withUsage(async () => {
+      const result = await converse({ items, history, message, language, glossary, pantry, restock, recipes, equipment, preferences, budgetNote });
+      persistLearned(userId, result);
+      // The model recognizes a recipe on its own (no button) and dedupes against
+      // saved ones; persist it when present. recipesRepo.save upserts by name.
+      if (result.recipe_learned?.name?.trim()) {
+        recipesRepo.save(userId, result.recipe_learned, message);
+        // Equipment named in a saved recipe is evidence the user has it.
+        equipmentRepo.observeFromRecipe(userId, result.recipe_learned.equipment ?? []);
+      }
+      // The user revealed the last basket wasn't theirs -> drop it from history and
+      // roll back the pantry it observed.
+      if (result.forget_last_purchase) {
+        const names = purchasesRepo.deleteLast(userId);
+        pantryRepo.removeObserved(userId, names);
+      }
+      const dishNames = result.dishes?.map((d) => d.name).join(" ") ?? "";
+      const sponsored = attachSponsored(
+        {
+          categories: items.map((i) => i.category),
+          terms: tokens(dishNames, (result.buy ?? []).join(" "), ...items.map((i) => i.name)),
+        },
+        exclusions,
+        seen
+      );
+      return { result, sponsored, state: stateOf(userId) };
+    });
+    res.json(settleBudget(userId, sessionId, spent, payload));
   } catch (err) {
     fail(res, err);
   }
@@ -286,7 +350,10 @@ export async function messageFlow(req: Request, res: Response): Promise<void> {
   }
 
   const language = detectLanguage(text);
-  const userId = userIdOf(req);
+  const gate = openBudget(req, res, language);
+  if (gate.blocked) return;
+  const { userId, sessionId, budgetNote } = gate;
+
   const glossary = glossaryRepo.list(userId);
   const pantry = pantryRepo.list(userId);
   const restock = itemStatsRepo.dueForRestock(userId);
@@ -295,75 +362,73 @@ export async function messageFlow(req: Request, res: Response): Promise<void> {
   const preferences = preferencesRepo.list(userId);
   const exclusions: AdExclusions | undefined = req.body?.adExclusions;
   const seen: string[] | undefined = req.body?.adSeen;
+  const itemCats = (items ?? []).map((i) => i.category);
+  const itemNames = (items ?? []).map((i) => i.name);
 
   try {
-    const intent = await classifyMessage({ text, hasBasket: Boolean(items?.length), language });
+    const { result: payload, tokens: spent } = await withUsage(async () => {
+      const intent = await classifyMessage({ text, hasBasket: Boolean(items?.length), language });
 
-    if (intent === "basket") {
-      // Same pipeline as /api/analyze, but for a pasted text list.
-      const parsed = await extractItems({ text, language, glossary });
-      if (!parsed.length) {
-        res.status(422).json({ error: "Could not read any products. Try a clearer list." });
-        return;
+      if (intent === "basket") {
+        // Same pipeline as /api/analyze, but for a pasted text list.
+        const parsed = await extractItems({ text, language, glossary });
+        if (!parsed.length) {
+          throw new HttpError(422, "Could not read any products. Try a clearer list.");
+        }
+        const analysis = await analyzeBasket(parsed, { language, glossary, pantry, recipes, equipment, preferences, budgetNote });
+        const forSelf = !analysis.attribution || analysis.attribution === "self";
+        if (forSelf) {
+          purchasesRepo.add(userId, { source_type: "text", basket_kind: analysis.basket_kind, raw_text: text }, parsed);
+          pantryRepo.observeFromPurchase(userId, parsed);
+          persistLearned(userId, analysis);
+        }
+        const sponsored = attachSponsored(
+          { categories: parsed.map((i) => i.category), terms: tokens(analysis.dish, analysis.buy.join(" "), ...parsed.map((i) => i.name)) },
+          exclusions,
+          seen
+        );
+        return { intent: "basket", items: parsed, analysis, sponsored, saved: forSelf, state: stateOf(userId) };
       }
-      const analysis = await analyzeBasket(parsed, { language, glossary, pantry, recipes, equipment, preferences });
-      const forSelf = !analysis.attribution || analysis.attribution === "self";
-      if (forSelf) {
-        purchasesRepo.add(userId, { source_type: "text", basket_kind: analysis.basket_kind, raw_text: text }, parsed);
-        pantryRepo.observeFromPurchase(userId, parsed);
-        persistLearned(userId, analysis);
+
+      if (intent === "buy") {
+        const result = await suggestBuy({ items, question: text, language, glossary, pantry, restock, budgetNote });
+        const sponsored = attachSponsored(
+          { categories: itemCats, terms: tokens(result.for_dish, result.buy.join(" "), ...itemNames) },
+          exclusions,
+          seen
+        );
+        return { intent: "buy", result, sponsored, state: stateOf(userId) };
+      }
+
+      if (intent === "cook") {
+        const result = await suggestCook({ items, question: text, language, glossary, pantry, restock, recipes, equipment, preferences, budgetNote });
+        const sponsored = attachSponsored(
+          { categories: itemCats, terms: tokens(result.dishes?.map((d) => d.name).join(" "), ...itemNames) },
+          exclusions,
+          seen
+        );
+        return { intent: "cook", result, sponsored, state: stateOf(userId) };
+      }
+
+      // chat — a follow-up/correction; converse needs the current basket (may be empty)
+      const result = await converse({ items: items ?? [], history, message: text, language, glossary, pantry, restock, recipes, equipment, preferences, budgetNote });
+      persistLearned(userId, result);
+      if (result.recipe_learned?.name?.trim()) {
+        recipesRepo.save(userId, result.recipe_learned, text);
+        equipmentRepo.observeFromRecipe(userId, result.recipe_learned.equipment ?? []);
+      }
+      if (result.forget_last_purchase) {
+        const names = purchasesRepo.deleteLast(userId);
+        pantryRepo.removeObserved(userId, names);
       }
       const sponsored = attachSponsored(
-        { categories: parsed.map((i) => i.category), terms: tokens(analysis.dish, analysis.buy.join(" "), ...parsed.map((i) => i.name)) },
+        { categories: itemCats, terms: tokens(result.dishes?.map((d) => d.name).join(" ") ?? "", (result.buy ?? []).join(" "), ...itemNames) },
         exclusions,
         seen
       );
-      res.json({ intent: "basket", items: parsed, analysis, sponsored, saved: forSelf, state: stateOf(userId) });
-      return;
-    }
-
-    if (intent === "buy") {
-      const result = await suggestBuy({ items, question: text, language, glossary, pantry, restock });
-      const sponsored = attachSponsored(
-        { categories: (items ?? []).map((i) => i.category), terms: tokens(result.for_dish, result.buy.join(" "), ...(items ?? []).map((i) => i.name)) },
-        exclusions,
-        seen
-      );
-      res.json({ intent: "buy", result, sponsored, state: stateOf(userId) });
-      return;
-    }
-
-    if (intent === "cook") {
-      const result = await suggestCook({ items, question: text, language, glossary, pantry, restock, recipes, equipment, preferences });
-      const sponsored = attachSponsored(
-        { categories: (items ?? []).map((i) => i.category), terms: tokens(result.dishes?.map((d) => d.name).join(" "), ...(items ?? []).map((i) => i.name)) },
-        exclusions,
-        seen
-      );
-      res.json({ intent: "cook", result, sponsored, state: stateOf(userId) });
-      return;
-    }
-
-    // chat — a follow-up/correction; converse needs the current basket (may be empty)
-    const result = await converse({ items: items ?? [], history, message: text, language, glossary, pantry, restock, recipes, equipment, preferences });
-    persistLearned(userId, result);
-    if (result.recipe_learned?.name?.trim()) {
-      recipesRepo.save(userId, result.recipe_learned, text);
-      equipmentRepo.observeFromRecipe(userId, result.recipe_learned.equipment ?? []);
-    }
-    if (result.forget_last_purchase) {
-      const names = purchasesRepo.deleteLast(userId);
-      pantryRepo.removeObserved(userId, names);
-    }
-    const sponsored = attachSponsored(
-      {
-        categories: (items ?? []).map((i) => i.category),
-        terms: tokens(result.dishes?.map((d) => d.name).join(" ") ?? "", (result.buy ?? []).join(" "), ...(items ?? []).map((i) => i.name)),
-      },
-      exclusions,
-      seen
-    );
-    res.json({ intent: "chat", result, sponsored, state: stateOf(userId) });
+      return { intent: "chat", result, sponsored, state: stateOf(userId) };
+    });
+    res.json(settleBudget(userId, sessionId, spent, payload));
   } catch (err) {
     fail(res, err);
   }
@@ -372,6 +437,38 @@ export async function messageFlow(req: Request, res: Response): Promise<void> {
 /** GET /api/state — the durable memory (pantry + glossary) the client renders. */
 export function stateFlow(req: Request, res: Response): void {
   res.json(stateOf(userIdOf(req)));
+}
+
+/**
+ * GET /api/usage — the user's token "balance" (session + daily budgets, with
+ * remaining) plus light durable-memory stats. Read-only; no LLM call, so it is
+ * free and always available even once a budget is spent.
+ */
+export function usageFlow(req: Request, res: Response): void {
+  const userId = userIdOf(req);
+  const sessionId = sessionIdOf(req, userId);
+  const view = readBudget(userId, sessionId);
+  // remaining is null when a budget is disabled (limit 0 = unlimited).
+  const remaining = (b: { used: number; limit: number }) => (b.limit > 0 ? Math.max(0, b.limit - b.used) : null);
+  const s = stateOf(userId);
+  res.json({
+    budget: {
+      session: { ...view.session, remaining: remaining(view.session) },
+      day: { ...view.day, remaining: remaining(view.day) },
+      low: view.low,
+      exhausted: view.exhausted,
+      warnRatio: WARN_RATIO,
+    },
+    stats: {
+      purchases: purchasesRepo.count(userId),
+      pantry: s.pantry.length,
+      glossary: s.glossary.length,
+      recipes: s.recipes.length,
+      equipment: s.equipment.length,
+      preferences: s.preferences.length,
+      restockDue: s.restock.length,
+    },
+  });
 }
 
 /** GET /api/history — recent purchases (basket history). */
@@ -417,6 +514,11 @@ function ensureConfigured(res: Response): boolean {
 }
 
 function fail(res: Response, err: unknown): void {
+  // A flow-raised HttpError carries its own status (e.g. 422 no products read).
+  if (err instanceof HttpError) {
+    res.status(err.status).json({ error: err.message });
+    return;
+  }
   const message = err instanceof Error ? err.message : "Unexpected error.";
   // Surface the upstream HTTP status when the SDK provides it, and turn a
   // provider content/security block into a clear, actionable message instead of

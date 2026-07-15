@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { addUsage } from "../usage.js";
 import type {
   ChatMessage,
   CompleteOptions,
@@ -46,6 +47,9 @@ export class OpenAiCompatibleProvider implements LlmProvider {
       ...(opts.json ? { response_format: { type: "json_object" } } : {}),
       messages: messages.map(toOpenAiMessage),
     });
+    // Charge the request's token budget (prompt + completion). Summed across all
+    // LLM calls in the request by the usage scope; harmless outside one.
+    addUsage(res.usage?.total_tokens ?? 0);
     return res.choices[0]?.message?.content?.trim() ?? "";
   }
 

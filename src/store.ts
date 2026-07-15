@@ -95,6 +95,14 @@ CREATE TABLE IF NOT EXISTS equipment (
   PRIMARY KEY (user_id, name)
 );
 
+CREATE TABLE IF NOT EXISTS token_usage (
+  scope      TEXT    NOT NULL,   -- 'session' | 'day'
+  key        TEXT    NOT NULL,   -- session: '<user>:<sessionId>'; day: '<user>:<YYYY-MM-DD>'
+  tokens     INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT    NOT NULL,
+  PRIMARY KEY (scope, key)
+);
+
 CREATE TABLE IF NOT EXISTS recipes (
   user_id       INTEGER NOT NULL,
   name          TEXT    NOT NULL COLLATE NOCASE,
@@ -135,6 +143,33 @@ export const usersRepo = {
        ON CONFLICT(id) DO UPDATE SET last_seen = excluded.last_seen`
     ).run(userId, provider, t, t);
     return userId;
+  },
+};
+
+// --- Token usage (session + daily budgets) ----------------------------------
+
+// Cumulative LLM token spend, tracked per session and per user-day so the
+// controller can warn/summarize near a limit and hard-stop once it's reached
+// (abuse guard). Deterministic counters, incremented after each request; the
+// budgets themselves live in budget.ts (env-configured at container start).
+
+export const usageRepo = {
+  get(scope: "session" | "day", key: string): number {
+    const row = db.prepare(`SELECT tokens FROM token_usage WHERE scope = ? AND key = ?`).get(scope, key) as
+      | { tokens: number }
+      | undefined;
+    return row?.tokens ?? 0;
+  },
+
+  add(scope: "session" | "day", key: string, tokens: number): void {
+    if (!tokens) return;
+    db.prepare(
+      `INSERT INTO token_usage (scope, key, tokens, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(scope, key) DO UPDATE SET
+         tokens = token_usage.tokens + excluded.tokens,
+         updated_at = excluded.updated_at`
+    ).run(scope, key, tokens, now());
   },
 };
 
@@ -183,6 +218,12 @@ export const purchasesRepo = {
     ).map((r) => r.n);
     db.prepare(`DELETE FROM purchases WHERE id = ?`).run(row.id); // cascade removes purchase_items
     return names;
+  },
+
+  /** Total saved baskets for the user (for usage stats). */
+  count(userId: number): number {
+    const row = db.prepare(`SELECT COUNT(*) AS n FROM purchases WHERE user_id = ?`).get(userId) as { n: number };
+    return row?.n ?? 0;
   },
 
   recent(userId: number, limit = 20): Array<{ id: number; ts: string; basket_kind: string | null; items: string[] }> {
