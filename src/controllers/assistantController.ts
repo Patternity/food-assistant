@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import {
   analyzeBasket,
+  classifyMessage,
   converse,
   extractItems,
   isConfigured,
@@ -260,6 +261,109 @@ export async function chatFlow(req: Request, res: Response): Promise<void> {
       seen
     );
     res.json({ result, sponsored, state: stateOf(userId) });
+  } catch (err) {
+    fail(res, err);
+  }
+}
+
+/**
+ * POST /api/message — one entry point for free text. The service asks the LLM to
+ * classify the message (basket | cook | buy | chat) and dispatches internally to
+ * the matching primitive, returning a unified response shaped like the endpoint
+ * that would have handled it, plus an `intent` field. This keeps the bot thin:
+ * it forwards text and renders by `intent`, with no keyword routing of its own.
+ */
+export async function messageFlow(req: Request, res: Response): Promise<void> {
+  if (!ensureConfigured(res)) return;
+
+  const text: string | undefined = req.body?.text;
+  const items: Item[] | undefined = Array.isArray(req.body?.items) ? req.body.items : undefined;
+  const history: Turn[] | undefined = Array.isArray(req.body?.history) ? req.body.history : undefined;
+
+  if (!text?.trim()) {
+    res.status(400).json({ error: "Provide a message." });
+    return;
+  }
+
+  const language = detectLanguage(text);
+  const userId = userIdOf(req);
+  const glossary = glossaryRepo.list(userId);
+  const pantry = pantryRepo.list(userId);
+  const restock = itemStatsRepo.dueForRestock(userId);
+  const recipes = recipesRepo.list(userId);
+  const equipment = equipmentRepo.list(userId);
+  const preferences = preferencesRepo.list(userId);
+  const exclusions: AdExclusions | undefined = req.body?.adExclusions;
+  const seen: string[] | undefined = req.body?.adSeen;
+
+  try {
+    const intent = await classifyMessage({ text, hasBasket: Boolean(items?.length), language });
+
+    if (intent === "basket") {
+      // Same pipeline as /api/analyze, but for a pasted text list.
+      const parsed = await extractItems({ text, language, glossary });
+      if (!parsed.length) {
+        res.status(422).json({ error: "Could not read any products. Try a clearer list." });
+        return;
+      }
+      const analysis = await analyzeBasket(parsed, { language, glossary, pantry, recipes, equipment, preferences });
+      const forSelf = !analysis.attribution || analysis.attribution === "self";
+      if (forSelf) {
+        purchasesRepo.add(userId, { source_type: "text", basket_kind: analysis.basket_kind, raw_text: text }, parsed);
+        pantryRepo.observeFromPurchase(userId, parsed);
+        persistLearned(userId, analysis);
+      }
+      const sponsored = attachSponsored(
+        { categories: parsed.map((i) => i.category), terms: tokens(analysis.dish, analysis.buy.join(" "), ...parsed.map((i) => i.name)) },
+        exclusions,
+        seen
+      );
+      res.json({ intent: "basket", items: parsed, analysis, sponsored, saved: forSelf, state: stateOf(userId) });
+      return;
+    }
+
+    if (intent === "buy") {
+      const result = await suggestBuy({ items, question: text, language, glossary, pantry, restock });
+      const sponsored = attachSponsored(
+        { categories: (items ?? []).map((i) => i.category), terms: tokens(result.for_dish, result.buy.join(" "), ...(items ?? []).map((i) => i.name)) },
+        exclusions,
+        seen
+      );
+      res.json({ intent: "buy", result, sponsored, state: stateOf(userId) });
+      return;
+    }
+
+    if (intent === "cook") {
+      const result = await suggestCook({ items, question: text, language, glossary, pantry, restock, recipes, equipment, preferences });
+      const sponsored = attachSponsored(
+        { categories: (items ?? []).map((i) => i.category), terms: tokens(result.dishes?.map((d) => d.name).join(" "), ...(items ?? []).map((i) => i.name)) },
+        exclusions,
+        seen
+      );
+      res.json({ intent: "cook", result, sponsored, state: stateOf(userId) });
+      return;
+    }
+
+    // chat — a follow-up/correction; converse needs the current basket (may be empty)
+    const result = await converse({ items: items ?? [], history, message: text, language, glossary, pantry, restock, recipes, equipment, preferences });
+    persistLearned(userId, result);
+    if (result.recipe_learned?.name?.trim()) {
+      recipesRepo.save(userId, result.recipe_learned, text);
+      equipmentRepo.observeFromRecipe(userId, result.recipe_learned.equipment ?? []);
+    }
+    if (result.forget_last_purchase) {
+      const names = purchasesRepo.deleteLast(userId);
+      pantryRepo.removeObserved(userId, names);
+    }
+    const sponsored = attachSponsored(
+      {
+        categories: (items ?? []).map((i) => i.category),
+        terms: tokens(result.dishes?.map((d) => d.name).join(" ") ?? "", (result.buy ?? []).join(" "), ...(items ?? []).map((i) => i.name)),
+      },
+      exclusions,
+      seen
+    );
+    res.json({ intent: "chat", result, sponsored, state: stateOf(userId) });
   } catch (err) {
     fail(res, err);
   }
