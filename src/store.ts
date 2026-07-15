@@ -96,11 +96,22 @@ CREATE TABLE IF NOT EXISTS equipment (
 );
 
 CREATE TABLE IF NOT EXISTS token_usage (
-  scope      TEXT    NOT NULL,   -- 'session' | 'day'
-  key        TEXT    NOT NULL,   -- session: '<user>:<sessionId>'; day: '<user>:<YYYY-MM-DD>'
+  scope      TEXT    NOT NULL,   -- 'day' (rolling per-user daily counter)
+  key        TEXT    NOT NULL,   -- '<user>:<YYYY-MM-DD>'
   tokens     INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT    NOT NULL,
   PRIMARY KEY (scope, key)
+);
+
+-- One live session per user. The bot signals open/close; a session also self-
+-- closes when its token budget is spent or after an inactivity TTL.
+CREATE TABLE IF NOT EXISTS sessions (
+  user_id    INTEGER PRIMARY KEY,
+  seq        INTEGER NOT NULL DEFAULT 0,   -- bumped on each new session (debug/telemetry)
+  tokens     INTEGER NOT NULL DEFAULT 0,   -- tokens spent in the current session
+  started_at TEXT    NOT NULL,
+  last_at    TEXT    NOT NULL,
+  closed     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS recipes (
@@ -170,6 +181,62 @@ export const usageRepo = {
          tokens = token_usage.tokens + excluded.tokens,
          updated_at = excluded.updated_at`
     ).run(scope, key, tokens, now());
+  },
+};
+
+// One live session per user (there's never more than one at a time). Lifecycle:
+// a fresh session starts when the caller forces it (open), when none exists, when
+// the current one is closed, or when it went idle past the TTL. It does NOT auto-
+// restart just because it's exhausted — a spent session stays spent until an
+// explicit open or the idle TTL, so the budget actually bites.
+
+type SessionRow = { seq: number; tokens: number; started_at: string; last_at: string; closed: number };
+
+export const sessionsRepo = {
+  /**
+   * Resolve the user's active session for this turn, opening a fresh one when
+   * needed. Returns the tokens already spent in the active session (0 for a
+   * fresh one). Mutates only when it opens a new session — an existing session's
+   * last_at is bumped later via add(), so a blocked turn doesn't extend its life.
+   */
+  resolve(userId: number, opts: { forceNew: boolean; ttlMs: number }): { seq: number; tokens: number; fresh: boolean } {
+    const row = db.prepare(`SELECT seq, tokens, started_at, last_at, closed FROM sessions WHERE user_id = ?`).get(userId) as
+      | SessionRow
+      | undefined;
+    const idleExpired = !!row && Date.now() - Date.parse(row.last_at) >= opts.ttlMs;
+    const fresh = opts.forceNew || !row || row.closed === 1 || idleExpired;
+    if (!fresh) return { seq: row!.seq, tokens: row!.tokens, fresh: false };
+
+    const seq = (row?.seq ?? 0) + 1;
+    const t = now();
+    db.prepare(
+      `INSERT INTO sessions (user_id, seq, tokens, started_at, last_at, closed)
+       VALUES (?, ?, 0, ?, ?, 0)
+       ON CONFLICT(user_id) DO UPDATE SET
+         seq = excluded.seq, tokens = 0, started_at = excluded.started_at, last_at = excluded.last_at, closed = 0`
+    ).run(userId, seq, t, t);
+    return { seq, tokens: 0, fresh: true };
+  },
+
+  /** Charge tokens spent this turn to the active session (and bump activity). */
+  add(userId: number, tokens: number): void {
+    if (!tokens) return;
+    db.prepare(`UPDATE sessions SET tokens = tokens + ?, last_at = ? WHERE user_id = ?`).run(tokens, now(), userId);
+  },
+
+  /** End the current session (the next turn opens a fresh one). */
+  close(userId: number): void {
+    db.prepare(`UPDATE sessions SET closed = 1, last_at = ? WHERE user_id = ?`).run(now(), userId);
+  },
+
+  /** Read-only tokens in the active session (0 if none / closed / idle) — for stats. */
+  peek(userId: number, ttlMs: number): number {
+    const row = db.prepare(`SELECT tokens, last_at, closed FROM sessions WHERE user_id = ?`).get(userId) as
+      | { tokens: number; last_at: string; closed: number }
+      | undefined;
+    if (!row || row.closed === 1) return 0;
+    if (Date.now() - Date.parse(row.last_at) >= ttlMs) return 0;
+    return row.tokens;
   },
 };
 

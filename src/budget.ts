@@ -1,8 +1,9 @@
-import { usageRepo } from "./store.js";
 import type { Lang } from "./lang.js";
 
 // Token budgets guard against abuse and runaway spend. Two limits, combined:
-//   - session: a single conversation (sessionId supplied by the orchestrator/bot);
+//   - session: ONE conversation per user, tracked server-side (see sessionsRepo).
+//     The bot only signals open/close; a session also closes itself when spent
+//     or after SESSION_TTL_HOURS of inactivity. No session id is plumbed around.
 //   - day: a rolling per-user daily cap so one user can't burn the whole quota.
 // Both are configured at container start (env). A limit of 0 disables that one.
 //
@@ -18,6 +19,10 @@ const num = (v: string | undefined, dflt: number): number => {
 export const SESSION_BUDGET = num(process.env.SESSION_TOKEN_BUDGET, 20000);
 export const DAILY_BUDGET = num(process.env.DAILY_TOKEN_BUDGET, 100000);
 export const WARN_RATIO = Math.min(1, Math.max(0, num(process.env.TOKEN_WARN_RATIO, 0.8)));
+// A session goes stale after this much inactivity, then the next message opens a
+// fresh one automatically (so an abandoned/exhausted session self-heals).
+export const SESSION_TTL_HOURS = num(process.env.SESSION_TTL_HOURS, 6);
+export const SESSION_TTL_MS = SESSION_TTL_HOURS * 3_600_000;
 
 export type BudgetScope = "session" | "day";
 
@@ -34,35 +39,25 @@ export function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-const sessionKey = (userId: number, sessionId: string) => `${userId}:${sessionId}`;
-const dayKey = (userId: number) => `${userId}:${today()}`;
+/** Daily-counter key for the token_usage store. */
+export const dayKey = (userId: number): string => `${userId}:${today()}`;
 
-/** Read spend BEFORE this turn and derive the budget state. */
-export function readBudget(userId: number, sessionId: string): BudgetView {
-  const sUsed = usageRepo.get("session", sessionKey(userId, sessionId));
-  const dUsed = usageRepo.get("day", dayKey(userId));
-
-  const sOver = SESSION_BUDGET > 0 && sUsed >= SESSION_BUDGET;
-  const dOver = DAILY_BUDGET > 0 && dUsed >= DAILY_BUDGET;
-  const sLow = SESSION_BUDGET > 0 && sUsed >= SESSION_BUDGET * WARN_RATIO;
-  const dLow = DAILY_BUDGET > 0 && dUsed >= DAILY_BUDGET * WARN_RATIO;
+/** Derive the budget state from tokens already spent (session + day). */
+export function viewFromUsage(sessionUsed: number, dayUsed: number): BudgetView {
+  const sOver = SESSION_BUDGET > 0 && sessionUsed >= SESSION_BUDGET;
+  const dOver = DAILY_BUDGET > 0 && dayUsed >= DAILY_BUDGET;
+  const sLow = SESSION_BUDGET > 0 && sessionUsed >= SESSION_BUDGET * WARN_RATIO;
+  const dLow = DAILY_BUDGET > 0 && dayUsed >= DAILY_BUDGET * WARN_RATIO;
 
   const scope: BudgetScope | null = dOver ? "day" : sOver ? "session" : dLow ? "day" : sLow ? "session" : null;
 
   return {
-    session: { used: sUsed, limit: SESSION_BUDGET },
-    day: { used: dUsed, limit: DAILY_BUDGET },
+    session: { used: sessionUsed, limit: SESSION_BUDGET },
+    day: { used: dayUsed, limit: DAILY_BUDGET },
     low: sLow || dLow,
     exhausted: sOver || dOver,
     scope,
   };
-}
-
-/** Charge tokens spent this turn to both the session and the daily counter. */
-export function recordUsage(userId: number, sessionId: string, tokens: number): void {
-  if (!tokens) return;
-  usageRepo.add("session", sessionKey(userId, sessionId), tokens);
-  usageRepo.add("day", dayKey(userId), tokens);
 }
 
 /**

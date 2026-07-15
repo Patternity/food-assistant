@@ -2,7 +2,7 @@ import "dotenv/config";
 import express from "express";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { analyzeBasketFlow, askFlow, chatFlow, feedbackFlow, historyFlow, messageFlow, stateFlow, usageFlow } from "./controllers/assistantController.js";
+import { analyzeBasketFlow, askFlow, chatFlow, feedbackFlow, historyFlow, messageFlow, sessionFlow, stateFlow, usageFlow } from "./controllers/assistantController.js";
 import { isConfigured } from "./services/assistantService.js";
 import { authAndUser, isDevOpen } from "./auth.js";
 
@@ -28,6 +28,7 @@ app.post("/api/message", messageFlow);
 app.post("/api/feedback", feedbackFlow);
 app.get("/api/state", stateFlow);
 app.get("/api/usage", usageFlow);
+app.post("/api/session", sessionFlow);
 app.get("/api/history", historyFlow);
 
 const port = Number(process.env.PORT || 3000);

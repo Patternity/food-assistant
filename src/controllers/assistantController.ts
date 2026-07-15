@@ -11,14 +11,14 @@ import {
   type Turn,
 } from "../services/assistantService.js";
 import { matchOffer, type AdContext, type AdExclusions } from "../services/adService.js";
-import { budgetDirective, budgetHardStopText, readBudget, recordUsage, today, WARN_RATIO, type BudgetView } from "../budget.js";
+import { budgetDirective, budgetHardStopText, dayKey, SESSION_TTL_MS, viewFromUsage, WARN_RATIO, type BudgetView } from "../budget.js";
 import { withUsage } from "../usage.js";
 import { detectLanguage, type Lang } from "../lang.js";
 import type { GlossaryEntry } from "../glossary.js";
 import type { PantryItem } from "../pantry.js";
 import type { EquipmentItem } from "../equipment.js";
 import type { Preference } from "../preferences.js";
-import { DEFAULT_USER_ID, equipmentRepo, glossaryRepo, itemStatsRepo, pantryRepo, preferencesRepo, purchasesRepo, recipesRepo } from "../store.js";
+import { DEFAULT_USER_ID, equipmentRepo, glossaryRepo, itemStatsRepo, pantryRepo, preferencesRepo, purchasesRepo, recipesRepo, sessionsRepo, usageRepo } from "../store.js";
 
 // Controllers own the use-case flow: validate input, load prerequisites,
 // sequence domain primitives, and map failures to user-facing errors. Services
@@ -74,13 +74,18 @@ function attachSponsored(
   return matchOffer(adCtx);
 }
 
-// The session id is supplied by the orchestrator (the bot) so the session
-// budget tracks one conversation. When absent (direct callers / the web UI) we
-// fall back to one rolling session per user-day, so the guard still applies.
-function sessionIdOf(req: Request, userId: number): string {
-  const raw = req.body?.sessionId ?? req.get("X-Session-Id");
-  const s = String(raw ?? "").trim();
-  return s || `u${userId}:${today()}`;
+// The bot signals the session with a simple flag; there is only ever one active
+// session per user. "open" forces a fresh session (entering the mode / tapping
+// "new session"); absent means continue the current one (auto-opening if none is
+// active or the previous went idle). "close" is handled by sessionFlow.
+function forceNewSession(req: Request): boolean {
+  const s = String(req.body?.session ?? "").toLowerCase();
+  return s === "open" || req.body?.newSession === true;
+}
+
+/** Current budget state, reading the active session + the daily counter. */
+function budgetOf(userId: number, sessionTokens: number): BudgetView {
+  return viewFromUsage(sessionTokens, usageRepo.get("day", dayKey(userId)));
 }
 
 // Error a flow can throw INSIDE the usage scope to return a specific HTTP status
@@ -93,18 +98,18 @@ class HttpError extends Error {
 
 type BudgetGate =
   | { blocked: true }
-  | { blocked: false; userId: number; sessionId: string; budgetNote: string };
+  | { blocked: false; userId: number; budgetNote: string };
 
 /**
- * Open the token-budget gate for an LLM turn. If a budget is fully spent, the
- * response is sent here (a canned message, no LLM call) and the caller stops.
- * Otherwise it returns the ids plus a `budgetNote` to fold into the prompt
- * (warn + summarize) when the budget is merely low.
+ * Open the token-budget gate for an LLM turn: resolve (or open) the user's
+ * session and check the budget. If a budget is fully spent, the response is sent
+ * here (a canned message, no LLM call) and the caller stops. Otherwise it returns
+ * a `budgetNote` to fold into the prompt (warn + summarize) when merely low.
  */
 function openBudget(req: Request, res: Response, language: Lang): BudgetGate {
   const userId = userIdOf(req);
-  const sessionId = sessionIdOf(req, userId);
-  const budget = readBudget(userId, sessionId);
+  const session = sessionsRepo.resolve(userId, { forceNew: forceNewSession(req), ttlMs: SESSION_TTL_MS });
+  const budget = budgetOf(userId, session.tokens);
   if (budget.exhausted) {
     // Shaped so existing clients render it without special-casing: `reply` at the
     // top level, and an intent/result mirror so a message-style client shows it.
@@ -112,13 +117,14 @@ function openBudget(req: Request, res: Response, language: Lang): BudgetGate {
     res.json({ blocked: true, intent: "chat", reply: message, result: { reply: message }, budget, state: stateOf(userId) });
     return { blocked: true };
   }
-  return { blocked: false, userId, sessionId, budgetNote: budgetDirective(budget) };
+  return { blocked: false, userId, budgetNote: budgetDirective(budget) };
 }
 
-/** Charge the tokens spent this turn and attach the fresh budget view. */
-function settleBudget(userId: number, sessionId: string, tokensSpent: number, payload: Record<string, unknown>) {
-  recordUsage(userId, sessionId, tokensSpent);
-  return { ...payload, budget: readBudget(userId, sessionId) as BudgetView };
+/** Charge the tokens spent this turn (session + day) and attach the fresh view. */
+function settleBudget(userId: number, tokensSpent: number, payload: Record<string, unknown>) {
+  sessionsRepo.add(userId, tokensSpent);
+  usageRepo.add("day", dayKey(userId), tokensSpent);
+  return { ...payload, budget: budgetOf(userId, sessionsRepo.peek(userId, SESSION_TTL_MS)) };
 }
 
 function tokens(...parts: (string | undefined)[]): string[] {
@@ -151,7 +157,7 @@ export async function analyzeBasketFlow(req: Request, res: Response): Promise<vo
   const language = detectLanguage(text);
   const gate = openBudget(req, res, language);
   if (gate.blocked) return;
-  const { userId, sessionId, budgetNote } = gate;
+  const { userId, budgetNote } = gate;
 
   const glossary = glossaryRepo.list(userId);
   const pantry = pantryRepo.list(userId);
@@ -198,7 +204,7 @@ export async function analyzeBasketFlow(req: Request, res: Response): Promise<vo
 
       return { items, analysis, sponsored, saved: forSelf, state: stateOf(userId) };
     });
-    res.json(settleBudget(userId, sessionId, spent, payload));
+    res.json(settleBudget(userId, spent, payload));
   } catch (err) {
     fail(res, err);
   }
@@ -221,7 +227,7 @@ export async function askFlow(req: Request, res: Response): Promise<void> {
   const language = detectLanguage(question);
   const gate = openBudget(req, res, language);
   if (gate.blocked) return;
-  const { userId, sessionId, budgetNote } = gate;
+  const { userId, budgetNote } = gate;
 
   const exclusions: AdExclusions | undefined = req.body?.adExclusions;
   const seen: string[] | undefined = req.body?.adSeen;
@@ -254,7 +260,7 @@ export async function askFlow(req: Request, res: Response): Promise<void> {
       );
       return { intent: "cook", result, sponsored, state: stateOf(userId) };
     });
-    res.json(settleBudget(userId, sessionId, spent, payload));
+    res.json(settleBudget(userId, spent, payload));
   } catch (err) {
     fail(res, err);
   }
@@ -285,7 +291,7 @@ export async function chatFlow(req: Request, res: Response): Promise<void> {
   const language = detectLanguage(message);
   const gate = openBudget(req, res, language);
   if (gate.blocked) return;
-  const { userId, sessionId, budgetNote } = gate;
+  const { userId, budgetNote } = gate;
 
   const exclusions: AdExclusions | undefined = req.body?.adExclusions;
   const seen: string[] | undefined = req.body?.adSeen;
@@ -324,7 +330,7 @@ export async function chatFlow(req: Request, res: Response): Promise<void> {
       );
       return { result, sponsored, state: stateOf(userId) };
     });
-    res.json(settleBudget(userId, sessionId, spent, payload));
+    res.json(settleBudget(userId, spent, payload));
   } catch (err) {
     fail(res, err);
   }
@@ -352,7 +358,7 @@ export async function messageFlow(req: Request, res: Response): Promise<void> {
   const language = detectLanguage(text);
   const gate = openBudget(req, res, language);
   if (gate.blocked) return;
-  const { userId, sessionId, budgetNote } = gate;
+  const { userId, budgetNote } = gate;
 
   const glossary = glossaryRepo.list(userId);
   const pantry = pantryRepo.list(userId);
@@ -428,7 +434,7 @@ export async function messageFlow(req: Request, res: Response): Promise<void> {
       );
       return { intent: "chat", result, sponsored, state: stateOf(userId) };
     });
-    res.json(settleBudget(userId, sessionId, spent, payload));
+    res.json(settleBudget(userId, spent, payload));
   } catch (err) {
     fail(res, err);
   }
@@ -446,8 +452,8 @@ export function stateFlow(req: Request, res: Response): void {
  */
 export function usageFlow(req: Request, res: Response): void {
   const userId = userIdOf(req);
-  const sessionId = sessionIdOf(req, userId);
-  const view = readBudget(userId, sessionId);
+  // Read-only: peek the active session without opening or extending one.
+  const view = budgetOf(userId, sessionsRepo.peek(userId, SESSION_TTL_MS));
   // remaining is null when a budget is disabled (limit 0 = unlimited).
   const remaining = (b: { used: number; limit: number }) => (b.limit > 0 ? Math.max(0, b.limit - b.used) : null);
   const s = stateOf(userId);
@@ -469,6 +475,24 @@ export function usageFlow(req: Request, res: Response): void {
       restockDue: s.restock.length,
     },
   });
+}
+
+/**
+ * POST /api/session — explicit session control from the bot. `{ action: "open" }`
+ * starts a fresh session (resetting the session token budget); `{ action:"close" }`
+ * ends the current one. Both are optional conveniences: a session also opens on
+ * the first message and self-closes on exhaustion or after the inactivity TTL.
+ * Returns the fresh budget view.
+ */
+export function sessionFlow(req: Request, res: Response): void {
+  const userId = userIdOf(req);
+  const action = String(req.body?.action ?? "open").toLowerCase();
+  if (action === "close") {
+    sessionsRepo.close(userId);
+  } else {
+    sessionsRepo.resolve(userId, { forceNew: true, ttlMs: SESSION_TTL_MS });
+  }
+  res.json({ action: action === "close" ? "close" : "open", budget: budgetOf(userId, sessionsRepo.peek(userId, SESSION_TTL_MS)) });
 }
 
 /** GET /api/history — recent purchases (basket history). */
