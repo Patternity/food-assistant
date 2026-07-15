@@ -1,35 +1,84 @@
+import { settingsRepo } from "./store.js";
 import type { Lang } from "./lang.js";
 
 // Token budgets guard against abuse and runaway spend. Two limits, combined:
 //   - session: ONE conversation per user, tracked server-side (see sessionsRepo).
 //     The bot only signals open/close; a session also closes itself when spent
-//     or after SESSION_TTL_HOURS of inactivity. No session id is plumbed around.
+//     or after the inactivity TTL. No session id is plumbed around.
 //   - day: a rolling per-user daily cap so one user can't burn the whole quota.
-// Both are configured at container start (env). A limit of 0 disables that one.
 //
-// At WARN_RATIO of either budget the assistant is told to warn the user and add
-// a short session summary, but it keeps answering ("chit-chat") until a budget
-// is fully spent. At 100% the controller hard-stops before calling the LLM.
+// The env values are DEFAULTS only; the effective config is stored in the
+// settings table and editable at runtime via the admin API (so an operator can
+// tune budgets from the bot's admin panel without redeploying). See budgetConfig().
+//
+// At warnRatio of either budget the assistant is told to warn the user and add a
+// short session summary, but it keeps answering ("chit-chat") until a budget is
+// fully spent. At 100% the controller hard-stops before calling the LLM.
 
 const num = (v: string | undefined, dflt: number): number => {
   const n = Number(v);
   return Number.isFinite(n) && n >= 0 ? n : dflt;
 };
 
-export const SESSION_BUDGET = num(process.env.SESSION_TOKEN_BUDGET, 20000);
-export const DAILY_BUDGET = num(process.env.DAILY_TOKEN_BUDGET, 100000);
-export const WARN_RATIO = Math.min(1, Math.max(0, num(process.env.TOKEN_WARN_RATIO, 0.8)));
-// A session goes stale after this much inactivity, then the next message opens a
-// fresh one automatically (so an abandoned/exhausted session self-heals).
-export const SESSION_TTL_HOURS = num(process.env.SESSION_TTL_HOURS, 6);
-export const SESSION_TTL_MS = SESSION_TTL_HOURS * 3_600_000;
+// Env-provided defaults (used until an admin overrides them at runtime).
+const DEFAULTS = {
+  sessionBudget: num(process.env.SESSION_TOKEN_BUDGET, 20000),
+  dailyBudget: num(process.env.DAILY_TOKEN_BUDGET, 100000),
+  warnRatio: Math.min(1, Math.max(0, num(process.env.TOKEN_WARN_RATIO, 0.8))),
+  sessionTtlHours: num(process.env.SESSION_TTL_HOURS, 6),
+};
+
+// Settings keys (also the field names accepted by the admin API).
+const KEYS = {
+  sessionBudget: "session_token_budget",
+  dailyBudget: "daily_token_budget",
+  warnRatio: "token_warn_ratio",
+  sessionTtlHours: "session_ttl_hours",
+} as const;
+
+export type BudgetConfig = {
+  sessionBudget: number;
+  dailyBudget: number;
+  warnRatio: number;
+  sessionTtlHours: number;
+  sessionTtlMs: number;
+};
+
+/** Effective config: stored settings over env defaults. Read fresh each call. */
+export function budgetConfig(): BudgetConfig {
+  const s = settingsRepo.all();
+  const sessionTtlHours = num(s[KEYS.sessionTtlHours], DEFAULTS.sessionTtlHours);
+  return {
+    sessionBudget: num(s[KEYS.sessionBudget], DEFAULTS.sessionBudget),
+    dailyBudget: num(s[KEYS.dailyBudget], DEFAULTS.dailyBudget),
+    warnRatio: Math.min(1, Math.max(0, num(s[KEYS.warnRatio], DEFAULTS.warnRatio))),
+    sessionTtlHours,
+    sessionTtlMs: sessionTtlHours * 3_600_000,
+  };
+}
+
+/**
+ * Apply an admin patch to the budget config (partial). Only known, valid fields
+ * are written; anything else is ignored. Returns the new effective config.
+ */
+export function setBudgetConfig(patch: Record<string, unknown>): BudgetConfig {
+  const write = (key: string, raw: unknown, min = 0, max = Number.POSITIVE_INFINITY) => {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= min && n <= max) settingsRepo.set(key, String(n));
+  };
+  write(KEYS.sessionBudget, patch.sessionBudget);
+  write(KEYS.dailyBudget, patch.dailyBudget);
+  write(KEYS.warnRatio, patch.warnRatio, 0, 1);
+  write(KEYS.sessionTtlHours, patch.sessionTtlHours);
+  return budgetConfig();
+}
 
 export type BudgetScope = "session" | "day";
 
 export type BudgetView = {
   session: { used: number; limit: number };
   day: { used: number; limit: number };
-  low: boolean; // reached WARN_RATIO of a budget -> warn + summarize
+  low: boolean; // reached warnRatio of a budget -> warn + summarize
   exhausted: boolean; // reached 100% of a budget -> hard stop
   scope: BudgetScope | null; // which budget is the tightest right now
 };
@@ -44,16 +93,17 @@ export const dayKey = (userId: number): string => `${userId}:${today()}`;
 
 /** Derive the budget state from tokens already spent (session + day). */
 export function viewFromUsage(sessionUsed: number, dayUsed: number): BudgetView {
-  const sOver = SESSION_BUDGET > 0 && sessionUsed >= SESSION_BUDGET;
-  const dOver = DAILY_BUDGET > 0 && dayUsed >= DAILY_BUDGET;
-  const sLow = SESSION_BUDGET > 0 && sessionUsed >= SESSION_BUDGET * WARN_RATIO;
-  const dLow = DAILY_BUDGET > 0 && dayUsed >= DAILY_BUDGET * WARN_RATIO;
+  const { sessionBudget, dailyBudget, warnRatio } = budgetConfig();
+  const sOver = sessionBudget > 0 && sessionUsed >= sessionBudget;
+  const dOver = dailyBudget > 0 && dayUsed >= dailyBudget;
+  const sLow = sessionBudget > 0 && sessionUsed >= sessionBudget * warnRatio;
+  const dLow = dailyBudget > 0 && dayUsed >= dailyBudget * warnRatio;
 
   const scope: BudgetScope | null = dOver ? "day" : sOver ? "session" : dLow ? "day" : sLow ? "session" : null;
 
   return {
-    session: { used: sessionUsed, limit: SESSION_BUDGET },
-    day: { used: dayUsed, limit: DAILY_BUDGET },
+    session: { used: sessionUsed, limit: sessionBudget },
+    day: { used: dayUsed, limit: dailyBudget },
     low: sLow || dLow,
     exhausted: sOver || dOver,
     scope,
