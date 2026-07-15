@@ -16,6 +16,7 @@ export class OpenAiCompatibleProvider implements LlmProvider {
   private client: OpenAI;
   private model: string;
   private visionModel: string;
+  private maxTokens: number;
 
   constructor() {
     this.client = new OpenAI({
@@ -24,6 +25,10 @@ export class OpenAiCompatibleProvider implements LlmProvider {
     });
     this.model = process.env.LLM_MODEL || "gpt-4o-mini";
     this.visionModel = process.env.LLM_VISION_MODEL || this.model;
+    // Cap output tokens. Our responses are short JSON; without a cap the model's
+    // full default (e.g. 16384) is requested, which some gateways (OpenRouter
+    // free tier) reject up-front for lack of credit. Overridable via env.
+    this.maxTokens = Number(process.env.LLM_MAX_TOKENS) || 2048;
   }
 
   isConfigured(): boolean {
@@ -37,6 +42,7 @@ export class OpenAiCompatibleProvider implements LlmProvider {
     const res = await this.client.chat.completions.create({
       model: hasImage ? this.visionModel : this.model,
       temperature: opts.temperature ?? 0.5,
+      max_tokens: this.maxTokens,
       ...(opts.json ? { response_format: { type: "json_object" } } : {}),
       messages: messages.map(toOpenAiMessage),
     });
