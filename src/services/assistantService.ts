@@ -236,6 +236,33 @@ export async function converse(input: {
   return provider().completeJSON<ConverseResult>(messages, { temperature: 0.4 });
 }
 
+export type MessageIntent = "basket" | "cook" | "buy" | "chat";
+
+/**
+ * Classify a free-text message into ONE intent (basket | cook | buy | chat).
+ * A lean, persona-free task: only the classifier prompt + language rule, so the
+ * decision isn't biased by the assistant persona. Temperature 0 for stability;
+ * defaults to "chat" if the model returns anything unexpected.
+ */
+export async function classifyMessage(input: {
+  text: string;
+  hasBasket: boolean;
+  language?: Lang;
+}): Promise<MessageIntent> {
+  let sys = loadPrompt("classify-message");
+  if (input.language) sys += languageDirective(input.language);
+  const messages: ChatMessage[] = [
+    { role: "system", content: sys },
+    {
+      role: "user",
+      content: `Basket exists this session: ${input.hasBasket ? "yes" : "no"}\n\nMessage: ${input.text.trim()}`,
+    },
+  ];
+  const out = await provider().completeJSON<{ intent?: string }>(messages, { temperature: 0 });
+  const intent = out.intent;
+  return intent === "basket" || intent === "cook" || intent === "buy" ? intent : "chat";
+}
+
 function contextBlock(items?: Item[], question?: string): string {
   const parts: string[] = [];
   if (items?.length) parts.push(`Recent items:\n${JSON.stringify(items, null, 2)}`);

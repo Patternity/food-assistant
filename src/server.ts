@@ -2,7 +2,7 @@ import "dotenv/config";
 import express from "express";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { analyzeBasketFlow, askFlow, chatFlow, feedbackFlow, historyFlow, stateFlow } from "./controllers/assistantController.js";
+import { analyzeBasketFlow, askFlow, chatFlow, feedbackFlow, historyFlow, messageFlow, stateFlow } from "./controllers/assistantController.js";
 import { isConfigured } from "./services/assistantService.js";
 import { authAndUser, isDevOpen } from "./auth.js";
 
@@ -24,6 +24,7 @@ app.use("/api", authAndUser);
 app.post("/api/analyze", analyzeBasketFlow);
 app.post("/api/ask", askFlow);
 app.post("/api/chat", chatFlow);
+app.post("/api/message", messageFlow);
 app.post("/api/feedback", feedbackFlow);
 app.get("/api/state", stateFlow);
 app.get("/api/history", historyFlow);
