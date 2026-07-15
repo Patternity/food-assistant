@@ -10,7 +10,7 @@ import {
   type Item,
   type Turn,
 } from "../services/assistantService.js";
-import { matchOffer, type AdContext, type AdExclusions } from "../services/adService.js";
+import { buildTags, filterDescriptors, setTagVocabulary, tagsDirective, tagVocabulary } from "../tags.js";
 import { budgetConfig, budgetDirective, budgetHardStopText, dayKey, setBudgetConfig, viewFromUsage, type BudgetView } from "../budget.js";
 import { withUsage } from "../usage.js";
 import { detectLanguage, type Lang } from "../lang.js";
@@ -62,18 +62,6 @@ function persistLearned(
   for (const pref of learned.preference_learned ?? []) preferencesRepo.upsert(userId, pref);
 }
 
-// Trust firewall: the sponsored offer (MOCK) is picked only AFTER the neutral
-// answer exists, from that answer plus the user's exclusions. It never feeds
-// back into the advice. See adService.ts.
-function attachSponsored(
-  ctx: { categories: string[]; terms: string[] },
-  exclusions?: AdExclusions,
-  seenOfferIds?: string[]
-) {
-  const adCtx: AdContext = { ...ctx, exclusions, seenOfferIds };
-  return matchOffer(adCtx);
-}
-
 // The bot signals the session with a simple flag; there is only ever one active
 // session per user. "open" forces a fresh session (entering the mode / tapping
 // "new session"); absent means continue the current one (auto-opening if none is
@@ -96,17 +84,18 @@ class HttpError extends Error {
   }
 }
 
-type BudgetGate =
+type TurnGate =
   | { blocked: true }
-  | { blocked: false; userId: number; budgetNote: string };
+  | { blocked: false; userId: number; budgetNote: string; tagsNote: string; vocab: string[] };
 
 /**
- * Open the token-budget gate for an LLM turn: resolve (or open) the user's
- * session and check the budget. If a budget is fully spent, the response is sent
- * here (a canned message, no LLM call) and the caller stops. Otherwise it returns
- * a `budgetNote` to fold into the prompt (warn + summarize) when merely low.
+ * Open an LLM turn: resolve (or open) the user's session and check the budget. If
+ * a budget is fully spent, the response is sent here (a canned message, no LLM
+ * call) and the caller stops. Otherwise it returns prompt notes to fold in — the
+ * budget warn+summary (when low) and the session-tag directive (from the current
+ * vocabulary) — plus the vocabulary for filtering the model's tags afterwards.
  */
-function openBudget(req: Request, res: Response, language: Lang): BudgetGate {
+function openTurn(req: Request, res: Response, language: Lang): TurnGate {
   const userId = userIdOf(req);
   const session = sessionsRepo.resolve(userId, { forceNew: forceNewSession(req), ttlMs: budgetConfig().sessionTtlMs });
   const budget = budgetOf(userId, session.tokens);
@@ -117,7 +106,8 @@ function openBudget(req: Request, res: Response, language: Lang): BudgetGate {
     res.json({ blocked: true, intent: "chat", reply: message, result: { reply: message }, budget, state: stateOf(userId) });
     return { blocked: true };
   }
-  return { blocked: false, userId, budgetNote: budgetDirective(budget) };
+  const vocab = tagVocabulary();
+  return { blocked: false, userId, budgetNote: budgetDirective(budget), tagsNote: tagsDirective(vocab), vocab };
 }
 
 /** Charge the tokens spent this turn (session + day) and attach the fresh view. */
@@ -125,15 +115,6 @@ function settleBudget(userId: number, tokensSpent: number, payload: Record<strin
   sessionsRepo.add(userId, tokensSpent);
   usageRepo.add("day", dayKey(userId), tokensSpent);
   return { ...payload, budget: budgetOf(userId, sessionsRepo.peek(userId, budgetConfig().sessionTtlMs)) };
-}
-
-function tokens(...parts: (string | undefined)[]): string[] {
-  return parts
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase()
-    .split(/[^a-zA-Zа-яА-Я0-9]+/)
-    .filter((t) => t.length > 2);
 }
 
 /** POST /api/analyze — evaluate an uploaded/pasted basket. */
@@ -155,17 +136,15 @@ export async function analyzeBasketFlow(req: Request, res: Response): Promise<vo
   // Reply in the user's language. With an image and little/no text, default
   // (Russian) applies; any typed text overrides it.
   const language = detectLanguage(text);
-  const gate = openBudget(req, res, language);
+  const gate = openTurn(req, res, language);
   if (gate.blocked) return;
-  const { userId, budgetNote } = gate;
+  const { userId, budgetNote, tagsNote, vocab } = gate;
 
   const glossary = glossaryRepo.list(userId);
   const pantry = pantryRepo.list(userId);
   const recipes = recipesRepo.list(userId);
   const equipment = equipmentRepo.list(userId);
   const preferences = preferencesRepo.list(userId);
-  const exclusions: AdExclusions | undefined = req.body?.adExclusions;
-  const seen: string[] | undefined = req.body?.adSeen;
 
   try {
     const { result: payload, tokens: spent } = await withUsage(async () => {
@@ -176,7 +155,7 @@ export async function analyzeBasketFlow(req: Request, res: Response): Promise<vo
       }
       // 2) evaluate the basket (type, verdict, dish, buy-list); saved recipes let
       //    the model note "this looks like it's for your usual <recipe>"
-      const analysis = await analyzeBasket(items, { language, glossary, pantry, recipes, equipment, preferences, budgetNote });
+      const analysis = await analyzeBasket(items, { language, glossary, pantry, recipes, equipment, preferences, budgetNote, tagsNote });
 
       // 3) persist — but only if this basket is the user's own consumption.
       //    If it's for guests / a gift / the pet / a one-off, we simply don't save
@@ -192,17 +171,13 @@ export async function analyzeBasketFlow(req: Request, res: Response): Promise<vo
         persistLearned(userId, analysis);
       }
 
-      // 4) MOCK ad, chosen after the answer, gated by user exclusions
-      const sponsored = attachSponsored(
-        {
-          categories: items.map((i) => i.category),
-          terms: tokens(analysis.dish, analysis.buy.join(" "), ...items.map((i) => i.name)),
-        },
-        exclusions,
-        seen
-      );
+      // 4) neutral interest/session tags (the orchestrator maps them, not us)
+      const tags = buildTags(userId, {
+        sessionCategories: items.map((i) => i.category),
+        descriptors: filterDescriptors(analysis.tags, vocab),
+      });
 
-      return { items, analysis, sponsored, saved: forSelf, state: stateOf(userId) };
+      return { items, analysis, tags, saved: forSelf, state: stateOf(userId) };
     });
     res.json(settleBudget(userId, spent, payload));
   } catch (err) {
@@ -225,12 +200,10 @@ export async function askFlow(req: Request, res: Response): Promise<void> {
 
   const intent = forced ?? classifyIntent(question ?? "");
   const language = detectLanguage(question);
-  const gate = openBudget(req, res, language);
+  const gate = openTurn(req, res, language);
   if (gate.blocked) return;
-  const { userId, budgetNote } = gate;
+  const { userId, budgetNote, tagsNote, vocab } = gate;
 
-  const exclusions: AdExclusions | undefined = req.body?.adExclusions;
-  const seen: string[] | undefined = req.body?.adSeen;
   const glossary = glossaryRepo.list(userId);
   const pantry = pantryRepo.list(userId);
   const restock = itemStatsRepo.dueForRestock(userId);
@@ -238,27 +211,17 @@ export async function askFlow(req: Request, res: Response): Promise<void> {
   const equipment = equipmentRepo.list(userId);
   const preferences = preferencesRepo.list(userId);
   const itemCats = (items ?? []).map((i) => i.category);
-  const itemNames = (items ?? []).map((i) => i.name);
 
   try {
     const { result: payload, tokens: spent } = await withUsage(async () => {
       if (intent === "buy") {
-        const result = await suggestBuy({ items, question, language, glossary, pantry, restock, budgetNote });
-        const sponsored = attachSponsored(
-          { categories: itemCats, terms: tokens(result.for_dish, result.buy.join(" "), ...itemNames) },
-          exclusions,
-          seen
-        );
-        return { intent, result, sponsored, state: stateOf(userId) };
+        const result = await suggestBuy({ items, question, language, glossary, pantry, restock, budgetNote, tagsNote });
+        const tags = buildTags(userId, { sessionCategories: itemCats, descriptors: filterDescriptors(result.tags, vocab) });
+        return { intent, result, tags, state: stateOf(userId) };
       }
-      const result = await suggestCook({ items, question, language, glossary, pantry, restock, recipes, equipment, preferences, budgetNote });
-      const dishNames = result.dishes?.map((d) => d.name).join(" ");
-      const sponsored = attachSponsored(
-        { categories: itemCats, terms: tokens(dishNames, ...itemNames) },
-        exclusions,
-        seen
-      );
-      return { intent: "cook", result, sponsored, state: stateOf(userId) };
+      const result = await suggestCook({ items, question, language, glossary, pantry, restock, recipes, equipment, preferences, budgetNote, tagsNote });
+      const tags = buildTags(userId, { sessionCategories: itemCats, descriptors: filterDescriptors(result.tags, vocab) });
+      return { intent: "cook", result, tags, state: stateOf(userId) };
     });
     res.json(settleBudget(userId, spent, payload));
   } catch (err) {
@@ -289,12 +252,10 @@ export async function chatFlow(req: Request, res: Response): Promise<void> {
   }
 
   const language = detectLanguage(message);
-  const gate = openBudget(req, res, language);
+  const gate = openTurn(req, res, language);
   if (gate.blocked) return;
-  const { userId, budgetNote } = gate;
+  const { userId, budgetNote, tagsNote, vocab } = gate;
 
-  const exclusions: AdExclusions | undefined = req.body?.adExclusions;
-  const seen: string[] | undefined = req.body?.adSeen;
   const glossary = glossaryRepo.list(userId);
   const pantry = pantryRepo.list(userId);
   const restock = itemStatsRepo.dueForRestock(userId);
@@ -304,7 +265,7 @@ export async function chatFlow(req: Request, res: Response): Promise<void> {
 
   try {
     const { result: payload, tokens: spent } = await withUsage(async () => {
-      const result = await converse({ items, history, message, language, glossary, pantry, restock, recipes, equipment, preferences, budgetNote });
+      const result = await converse({ items, history, message, language, glossary, pantry, restock, recipes, equipment, preferences, budgetNote, tagsNote });
       persistLearned(userId, result);
       // The model recognizes a recipe on its own (no button) and dedupes against
       // saved ones; persist it when present. recipesRepo.save upserts by name.
@@ -319,16 +280,11 @@ export async function chatFlow(req: Request, res: Response): Promise<void> {
         const names = purchasesRepo.deleteLast(userId);
         pantryRepo.removeObserved(userId, names);
       }
-      const dishNames = result.dishes?.map((d) => d.name).join(" ") ?? "";
-      const sponsored = attachSponsored(
-        {
-          categories: items.map((i) => i.category),
-          terms: tokens(dishNames, (result.buy ?? []).join(" "), ...items.map((i) => i.name)),
-        },
-        exclusions,
-        seen
-      );
-      return { result, sponsored, state: stateOf(userId) };
+      const tags = buildTags(userId, {
+        sessionCategories: items.map((i) => i.category),
+        descriptors: filterDescriptors(result.tags, vocab),
+      });
+      return { result, tags, state: stateOf(userId) };
     });
     res.json(settleBudget(userId, spent, payload));
   } catch (err) {
@@ -356,9 +312,9 @@ export async function messageFlow(req: Request, res: Response): Promise<void> {
   }
 
   const language = detectLanguage(text);
-  const gate = openBudget(req, res, language);
+  const gate = openTurn(req, res, language);
   if (gate.blocked) return;
-  const { userId, budgetNote } = gate;
+  const { userId, budgetNote, tagsNote, vocab } = gate;
 
   const glossary = glossaryRepo.list(userId);
   const pantry = pantryRepo.list(userId);
@@ -366,10 +322,7 @@ export async function messageFlow(req: Request, res: Response): Promise<void> {
   const recipes = recipesRepo.list(userId);
   const equipment = equipmentRepo.list(userId);
   const preferences = preferencesRepo.list(userId);
-  const exclusions: AdExclusions | undefined = req.body?.adExclusions;
-  const seen: string[] | undefined = req.body?.adSeen;
   const itemCats = (items ?? []).map((i) => i.category);
-  const itemNames = (items ?? []).map((i) => i.name);
 
   try {
     const { result: payload, tokens: spent } = await withUsage(async () => {
@@ -381,43 +334,31 @@ export async function messageFlow(req: Request, res: Response): Promise<void> {
         if (!parsed.length) {
           throw new HttpError(422, "Could not read any products. Try a clearer list.");
         }
-        const analysis = await analyzeBasket(parsed, { language, glossary, pantry, recipes, equipment, preferences, budgetNote });
+        const analysis = await analyzeBasket(parsed, { language, glossary, pantry, recipes, equipment, preferences, budgetNote, tagsNote });
         const forSelf = !analysis.attribution || analysis.attribution === "self";
         if (forSelf) {
           purchasesRepo.add(userId, { source_type: "text", basket_kind: analysis.basket_kind, raw_text: text }, parsed);
           pantryRepo.observeFromPurchase(userId, parsed);
           persistLearned(userId, analysis);
         }
-        const sponsored = attachSponsored(
-          { categories: parsed.map((i) => i.category), terms: tokens(analysis.dish, analysis.buy.join(" "), ...parsed.map((i) => i.name)) },
-          exclusions,
-          seen
-        );
-        return { intent: "basket", items: parsed, analysis, sponsored, saved: forSelf, state: stateOf(userId) };
+        const tags = buildTags(userId, { sessionCategories: parsed.map((i) => i.category), descriptors: filterDescriptors(analysis.tags, vocab) });
+        return { intent: "basket", items: parsed, analysis, tags, saved: forSelf, state: stateOf(userId) };
       }
 
       if (intent === "buy") {
-        const result = await suggestBuy({ items, question: text, language, glossary, pantry, restock, budgetNote });
-        const sponsored = attachSponsored(
-          { categories: itemCats, terms: tokens(result.for_dish, result.buy.join(" "), ...itemNames) },
-          exclusions,
-          seen
-        );
-        return { intent: "buy", result, sponsored, state: stateOf(userId) };
+        const result = await suggestBuy({ items, question: text, language, glossary, pantry, restock, budgetNote, tagsNote });
+        const tags = buildTags(userId, { sessionCategories: itemCats, descriptors: filterDescriptors(result.tags, vocab) });
+        return { intent: "buy", result, tags, state: stateOf(userId) };
       }
 
       if (intent === "cook") {
-        const result = await suggestCook({ items, question: text, language, glossary, pantry, restock, recipes, equipment, preferences, budgetNote });
-        const sponsored = attachSponsored(
-          { categories: itemCats, terms: tokens(result.dishes?.map((d) => d.name).join(" "), ...itemNames) },
-          exclusions,
-          seen
-        );
-        return { intent: "cook", result, sponsored, state: stateOf(userId) };
+        const result = await suggestCook({ items, question: text, language, glossary, pantry, restock, recipes, equipment, preferences, budgetNote, tagsNote });
+        const tags = buildTags(userId, { sessionCategories: itemCats, descriptors: filterDescriptors(result.tags, vocab) });
+        return { intent: "cook", result, tags, state: stateOf(userId) };
       }
 
       // chat — a follow-up/correction; converse needs the current basket (may be empty)
-      const result = await converse({ items: items ?? [], history, message: text, language, glossary, pantry, restock, recipes, equipment, preferences, budgetNote });
+      const result = await converse({ items: items ?? [], history, message: text, language, glossary, pantry, restock, recipes, equipment, preferences, budgetNote, tagsNote });
       persistLearned(userId, result);
       if (result.recipe_learned?.name?.trim()) {
         recipesRepo.save(userId, result.recipe_learned, text);
@@ -427,12 +368,8 @@ export async function messageFlow(req: Request, res: Response): Promise<void> {
         const names = purchasesRepo.deleteLast(userId);
         pantryRepo.removeObserved(userId, names);
       }
-      const sponsored = attachSponsored(
-        { categories: itemCats, terms: tokens(result.dishes?.map((d) => d.name).join(" ") ?? "", (result.buy ?? []).join(" "), ...itemNames) },
-        exclusions,
-        seen
-      );
-      return { intent: "chat", result, sponsored, state: stateOf(userId) };
+      const tags = buildTags(userId, { sessionCategories: itemCats, descriptors: filterDescriptors(result.tags, vocab) });
+      return { intent: "chat", result, tags, state: stateOf(userId) };
     });
     res.json(settleBudget(userId, spent, payload));
   } catch (err) {
@@ -512,6 +449,32 @@ export function sessionFlow(req: Request, res: Response): void {
     sessionsRepo.resolve(userId, { forceNew: true, ttlMs: budgetConfig().sessionTtlMs });
   }
   res.json({ action: action === "close" ? "close" : "open", budget: budgetOf(userId, sessionsRepo.peek(userId, budgetConfig().sessionTtlMs)) });
+}
+
+/**
+ * GET /api/tags — the user's durable interest portrait (interests + always-
+ * excluded), no LLM. `session` is empty here; session tags come with each answer.
+ */
+export function tagsFlow(req: Request, res: Response): void {
+  res.json({ tags: buildTags(userIdOf(req), {}) });
+}
+
+/**
+ * GET /api/tags/vocabulary — the editable descriptor vocabulary the assistant may
+ * emit. The orchestrator both sets this and consumes the tags, so the two stay
+ * consistent. Read-only.
+ */
+export function tagsVocabularyFlow(_req: Request, res: Response): void {
+  res.json({ vocabulary: tagVocabulary() });
+}
+
+/**
+ * PUT /api/tags/vocabulary — replace the descriptor vocabulary (admin). Body:
+ * { vocabulary: string[] }. Normalized (lowercase/trim/dedupe, capped). Auth is
+ * the service token; the bot gates who is an admin. Returns the stored list.
+ */
+export function updateTagsVocabularyFlow(req: Request, res: Response): void {
+  res.json({ vocabulary: setTagVocabulary(req.body?.vocabulary) });
 }
 
 /** GET /api/history — recent purchases (basket history). */

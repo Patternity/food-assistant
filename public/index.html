@@ -85,16 +85,8 @@
     let imageDataUrl = null;
     let lastItems = null;   // current basket for this session
     let history = [];       // short conversation history (user/assistant turns)
-    const adSeen = [];      // offer ids already shown this session (avoid repeats)
 
     function pushHistory(role, text) { if (text) history.push({ role, text }); history = history.slice(-8); }
-
-    // Session ad-exclusions. In the alpha there is no server memory, so the
-    // user's "don't show this category" choices live here and are sent with
-    // every request — demonstrating that exclusions gate ads (the same idea as
-    // do_not_suggest in the real product).
-    const adExclusions = JSON.parse(localStorage.getItem('adExclusions') || '{"categories":[],"brands":[],"retailers":[]}');
-    function saveExclusions() { localStorage.setItem('adExclusions', JSON.stringify(adExclusions)); }
 
     // Durable memory (pantry + glossary) is owned by the SERVER now. The client
     // holds a local copy only for rendering; every response carries the fresh
@@ -204,26 +196,15 @@
       });
     }
 
-    // Render a sponsored offer (MOCK) as a clearly separated, labeled block.
-    function renderAd(sponsored, into) {
-      if (!sponsored) return;
-      if (!adSeen.includes(sponsored.offer_id)) adSeen.push(sponsored.offer_id);
-      const ad = el('div', 'ad');
-      ad.innerHTML =
-        '<span class="tag">' + esc(sponsored.label || 'Sponsored offer') + '</span>' +
-        '<div class="offer">' + esc(sponsored.product_name) + ' — ' + esc(sponsored.claim) +
-        ' <span class="muted">(' + esc(sponsored.brand) + ', ' + esc(sponsored.retailer) + ')</span></div>';
-      const dismiss = el('div', 'dismiss');
-      const btn = el('button', null, 'Don’t show ' + esc(sponsored.category) + ' offers');
-      btn.onclick = () => {
-        if (!adExclusions.categories.includes(sponsored.category)) adExclusions.categories.push(sponsored.category);
-        saveExclusions();
-        ad.remove();
-        statusEl.textContent = 'Blocked "' + sponsored.category + '" ads for this session.';
-      };
-      dismiss.appendChild(btn);
-      ad.appendChild(dismiss);
-      into.appendChild(ad);
+    // Render the neutral interest/session tags the assistant emits (NOT ads).
+    // The orchestrator would map these to offers; here we just show them.
+    function renderTags(tags, into) {
+      if (!tags || !tags.session || !tags.session.length) return;
+      const box = el('div', 'ad');
+      box.innerHTML =
+        '<span class="tag">session tags</span>' +
+        '<div class="offer">' + tags.session.map(esc).join(', ') + '</div>';
+      into.appendChild(box);
     }
 
     document.getElementById('pick').onclick = () => fileEl.click();
@@ -292,7 +273,7 @@
       pushHistory('user', text || '[uploaded a basket image]');
       busy(true, 'Reading basket…');
       try {
-        const { items, analysis, sponsored, state, saved } = await post('/api/analyze', { text, imageDataUrl, adExclusions, adSeen });
+        const { items, analysis, tags, state, saved } = await post('/api/analyze', { text, imageDataUrl });
         lastItems = items;           // start / replace the current basket
         history = [];                // fresh conversation for a new basket
         toastLearned(analysis.glossary_learned, analysis.pantry_learned);
@@ -326,7 +307,7 @@
             } catch (e) { toast(e.message); }
           }
         });
-        renderAd(sponsored, n);
+        renderTags(tags, n);
         addBot(n);
         textEl.value=''; imageDataUrl=null; thumb.hidden=true;
       } catch (e) { addBot(el('div','err', esc(e.message))); }
@@ -339,13 +320,13 @@
       pushHistory('user', shown);
       busy(true);
       try {
-        const { result, sponsored, state } = await post('/api/ask', { question, intent, items: lastItems, adExclusions, adSeen });
+        const { result, tags, state } = await post('/api/ask', { question, intent, items: lastItems });
         showPantry = (intent === 'cook');   // show what's at home only when cooking
         dishTokens = showPantry ? dishIngredientTokens(result) : new Set();
         applyState(state);
         pushHistory('assistant', result.reply);
         const n = renderResult(result);
-        renderAd(sponsored, n);
+        renderTags(tags, n);
         addBot(n);
         textEl.value='';
       } catch (e) { addBot(el('div','err', esc(e.message))); }
@@ -359,7 +340,7 @@
       pushHistory('user', message);
       busy(true);
       try {
-        const { result, sponsored, state } = await post('/api/chat', { message, items: lastItems, history, adExclusions, adSeen });
+        const { result, tags, state } = await post('/api/chat', { message, items: lastItems, history });
         toastLearned(result.glossary_learned, result.pantry_learned);
         if (result.recipe_learned && result.recipe_learned.name) toast('★ Сохранил рецепт: ' + result.recipe_learned.name);
         (result.equipment_learned || []).forEach(e => e && e.name && toast('🍳 Техника: ' + e.name + (e.state === 'absent' ? ' (нет)' : '')));
@@ -370,7 +351,7 @@
         applyState(state);
         pushHistory('assistant', result.reply);
         const n = renderResult(result);
-        renderAd(sponsored, n);
+        renderTags(tags, n);
         addBot(n);
         textEl.value='';
       } catch (e) { addBot(el('div','err', esc(e.message))); }
