@@ -10,7 +10,7 @@ import {
   type Item,
   type Turn,
 } from "../services/assistantService.js";
-import { buildTags, filterDescriptors, setTagVocabulary, tagsDirective, tagVocabulary } from "../tags.js";
+import { buildTags, filterCategories, filterDescriptors, setTagVocabulary, tagsDirective, tagVocabulary } from "../tags.js";
 import { budgetConfig, budgetDirective, budgetHardStopText, dayKey, setBudgetConfig, viewFromUsage, type BudgetView } from "../budget.js";
 import { withUsage } from "../usage.js";
 import { detectLanguage, type Lang } from "../lang.js";
@@ -171,9 +171,12 @@ export async function analyzeBasketFlow(req: Request, res: Response): Promise<vo
         persistLearned(userId, analysis);
       }
 
-      // 4) neutral interest/session tags (the orchestrator maps them, not us)
+      // 4) neutral interest/session tags (the orchestrator maps them, not us).
+      //    Session categories are the answer's topics, not the basket items —
+      //    the basket may be an already-completed purchase, so targeting follows
+      //    what the conversation is about.
       const tags = buildTags(userId, {
-        sessionCategories: items.map((i) => i.category),
+        sessionCategories: filterCategories(analysis.topics),
         descriptors: filterDescriptors(analysis.tags, vocab),
       });
 
@@ -211,17 +214,16 @@ export async function askFlow(req: Request, res: Response): Promise<void> {
   const recipes = recipesRepo.list(userId);
   const equipment = equipmentRepo.list(userId);
   const preferences = preferencesRepo.list(userId);
-  const itemCats = (items ?? []).map((i) => i.category);
 
   try {
     const { result: payload, tokens: spent } = await withUsage(async () => {
       if (intent === "buy") {
         const result = await suggestBuy({ items, question, history, language, glossary, pantry, restock, budgetNote, tagsNote });
-        const tags = buildTags(userId, { sessionCategories: itemCats, descriptors: filterDescriptors(result.tags, vocab) });
+        const tags = buildTags(userId, { sessionCategories: filterCategories(result.topics), descriptors: filterDescriptors(result.tags, vocab) });
         return { intent, result, tags, state: stateOf(userId) };
       }
       const result = await suggestCook({ items, question, history, language, glossary, pantry, restock, recipes, equipment, preferences, budgetNote, tagsNote });
-      const tags = buildTags(userId, { sessionCategories: itemCats, descriptors: filterDescriptors(result.tags, vocab) });
+      const tags = buildTags(userId, { sessionCategories: filterCategories(result.topics), descriptors: filterDescriptors(result.tags, vocab) });
       return { intent: "cook", result, tags, state: stateOf(userId) };
     });
     res.json(settleBudget(userId, spent, payload));
@@ -282,7 +284,7 @@ export async function chatFlow(req: Request, res: Response): Promise<void> {
         pantryRepo.removeObserved(userId, names);
       }
       const tags = buildTags(userId, {
-        sessionCategories: items.map((i) => i.category),
+        sessionCategories: filterCategories(result.topics),
         descriptors: filterDescriptors(result.tags, vocab),
       });
       return { result, tags, state: stateOf(userId) };
@@ -323,7 +325,6 @@ export async function messageFlow(req: Request, res: Response): Promise<void> {
   const recipes = recipesRepo.list(userId);
   const equipment = equipmentRepo.list(userId);
   const preferences = preferencesRepo.list(userId);
-  const itemCats = (items ?? []).map((i) => i.category);
 
   try {
     const { result: payload, tokens: spent } = await withUsage(async () => {
@@ -342,19 +343,19 @@ export async function messageFlow(req: Request, res: Response): Promise<void> {
           pantryRepo.observeFromPurchase(userId, parsed);
           persistLearned(userId, analysis);
         }
-        const tags = buildTags(userId, { sessionCategories: parsed.map((i) => i.category), descriptors: filterDescriptors(analysis.tags, vocab) });
+        const tags = buildTags(userId, { sessionCategories: filterCategories(analysis.topics), descriptors: filterDescriptors(analysis.tags, vocab) });
         return { intent: "basket", items: parsed, analysis, tags, saved: forSelf, state: stateOf(userId) };
       }
 
       if (intent === "buy") {
         const result = await suggestBuy({ items, question: text, history, language, glossary, pantry, restock, budgetNote, tagsNote });
-        const tags = buildTags(userId, { sessionCategories: itemCats, descriptors: filterDescriptors(result.tags, vocab) });
+        const tags = buildTags(userId, { sessionCategories: filterCategories(result.topics), descriptors: filterDescriptors(result.tags, vocab) });
         return { intent: "buy", result, tags, state: stateOf(userId) };
       }
 
       if (intent === "cook") {
         const result = await suggestCook({ items, question: text, history, language, glossary, pantry, restock, recipes, equipment, preferences, budgetNote, tagsNote });
-        const tags = buildTags(userId, { sessionCategories: itemCats, descriptors: filterDescriptors(result.tags, vocab) });
+        const tags = buildTags(userId, { sessionCategories: filterCategories(result.topics), descriptors: filterDescriptors(result.tags, vocab) });
         return { intent: "cook", result, tags, state: stateOf(userId) };
       }
 
@@ -369,7 +370,7 @@ export async function messageFlow(req: Request, res: Response): Promise<void> {
         const names = purchasesRepo.deleteLast(userId);
         pantryRepo.removeObserved(userId, names);
       }
-      const tags = buildTags(userId, { sessionCategories: itemCats, descriptors: filterDescriptors(result.tags, vocab) });
+      const tags = buildTags(userId, { sessionCategories: filterCategories(result.topics), descriptors: filterDescriptors(result.tags, vocab) });
       return { intent: "chat", result, tags, state: stateOf(userId) };
     });
     res.json(settleBudget(userId, spent, payload));
