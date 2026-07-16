@@ -73,5 +73,13 @@ export function pantryLearnHint(): string {
     '"pantry_learned": [{ "name": "...", "category": "...", "state": "available|missing" }].',
     "This is separate from assumed staples. Never invent items the user did not",
     "mention or imply.",
+    "",
+    "POSSESSION vs INTENTION: mark an item \"available\" ONLY when the user states or",
+    "clearly implies they ALREADY HAVE it at home. A wish, plan, or request to COOK",
+    "or BUY something (e.g. \"I want to make fish tonight\", \"what should I grab for X\")",
+    "is NOT possession — do not record the target dish or its ingredients as at home.",
+    "If anything, a dish the user wants to make, or an ingredient they ask about",
+    "buying, is likely something they still need. When possession is simply unknown,",
+    "record nothing for that item (neither available nor missing).",
   ].join("\n");
 }

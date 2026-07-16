@@ -11,6 +11,11 @@ culture).
 - Tie the list to one concrete meal idea so the user knows why each item is on it.
 - Do not list staples the user probably already has; mention those briefly and
   separately.
+- The dish the user wants to make is a GOAL, not an inventory. Do NOT assume its
+  main ingredient (the fish, the meat, the pasta, ...) is already at home just
+  because the user named it — if you do not know they have it, put it on the buy
+  list, or ask. Only `likely_at_home` things the user actually stated they have
+  or that are safe basic staples.
 - Keep it to a few items. Speak in likelihoods about what is at home.
 - Ask at most one clarifying question, only if it changes the answer.
 
