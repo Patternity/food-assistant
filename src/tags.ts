@@ -16,6 +16,27 @@ import { pantryRepo, settingsRepo } from "./store.js";
 // `excluded` so the orchestrator's matcher skips them.
 const PROHIBITED_ALWAYS = ["alcohol", "tobacco"];
 
+// Structural food categories — the code-owned backbone (kept in sync with the
+// "category" enum in lang.ts). The model tags a session's *topic* with these so
+// ads/personalization follow what the conversation is about, not what happens to
+// sit in the basket (a basket may be an already-completed purchase).
+export const STRUCTURAL_CATEGORIES = [
+  "meat",
+  "fish",
+  "vegetable",
+  "fruit",
+  "dairy",
+  "grain",
+  "bread",
+  "drink",
+  "water",
+  "sweet",
+  "snack",
+  "household",
+  "condiment",
+  "other",
+] as const;
+
 // Seed descriptor vocabulary (abstract, no ingredients or per-culture rules).
 // Overridable at runtime; the operator can add/remove freely.
 const DEFAULT_DESCRIPTORS = [
@@ -65,20 +86,31 @@ export function setTagVocabulary(list: unknown): string[] {
 }
 
 /**
- * System-prompt block letting the model tag the session from the vocabulary.
- * "" when the vocabulary is empty (then no descriptor tags are requested).
+ * System-prompt block letting the model tag the session. Always asks for the
+ * `topics` (structural categories the conversation is about, so targeting
+ * follows context, not the basket); additionally asks for descriptor `tags`
+ * when a vocabulary is configured.
  */
 export function tagsDirective(vocab: string[]): string {
-  if (!vocab.length) return "";
-  return [
+  const lines = [
     "",
     "",
-    'SESSION TAGS: add a "tags" array to the JSON you return — 0 to 4 tags that',
-    "describe what this session/answer is about (meal timing, intent, dietary",
-    "angle). Choose ONLY from this exact list, verbatim; use [] if none fit and",
-    "never invent tags:",
-    vocab.join(", "),
-  ].join("\n");
+    'SESSION TOPICS: add a "topics" array to the JSON you return — the food',
+    "categories THIS conversation/answer is about (what the user is asking for or",
+    "discussing right now), even if nothing is in the basket. Choose ONLY from",
+    "this exact list, verbatim; use [] if none fit and never invent categories:",
+    STRUCTURAL_CATEGORIES.join(", "),
+  ];
+  if (vocab.length) {
+    lines.push(
+      "",
+      'SESSION TAGS: also add a "tags" array — 0 to 4 tags that describe the',
+      "session's angle (meal timing, intent, dietary angle). Choose ONLY from this",
+      "exact list, verbatim; use [] if none fit and never invent tags:",
+      vocab.join(", "),
+    );
+  }
+  return lines.join("\n");
 }
 
 /** Keep only LLM-emitted tags that are in the current vocabulary. */
@@ -88,12 +120,20 @@ export function filterDescriptors(raw: unknown, vocab: string[]): string[] {
   return uniq(raw.map(norm).filter((t) => allowed.has(t)));
 }
 
+/** Keep only LLM-emitted topics that are valid structural categories. */
+export function filterCategories(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const allowed = new Set(STRUCTURAL_CATEGORIES.map(norm));
+  return uniq(raw.map(norm).filter((c) => allowed.has(c)));
+}
+
 export type Tags = { interests: string[]; session: string[]; excluded: string[] };
 
 /**
  * Assemble the neutral tag signal:
  *  - interests: durable categories from the pantry (what's usually at home);
- *  - session:   categories present in this answer + the LLM's vocabulary tags;
+ *  - session:   categories the current answer is ABOUT (topics) + the LLM's
+ *               vocabulary tags — driven by the conversation, not the basket;
  *  - excluded:  always-prohibited categories (the bot layers user prefs on top).
  * Deterministic; no LLM here (the descriptors were already produced upstream).
  */

@@ -20,8 +20,11 @@ includes:
 
 - **interests** — durable portrait, from the pantry (what's usually at home).
   Category codes only. Deterministic; no LLM.
-- **session** — what this answer is about: the categories present in it **plus**
-  descriptor tags the model chose from the vocabulary (see below).
+- **session** — what this answer is **about**: the structural categories the
+  model reports as the conversation's topic (its `topics` field, validated
+  against the category list) **plus** descriptor tags it chose from the
+  vocabulary (see below). Driven by the conversation, **not** by the basket — a
+  basket may be an already-completed purchase, so it must not drive targeting.
 - **excluded** — always-prohibited categories (safety). The orchestrator layers
   its own per-user exclusions (e.g. from `state.preferences`) on top.
 

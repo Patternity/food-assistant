@@ -73,6 +73,7 @@ export type BasketAnalysis = {
   pantry_learned?: PantryItem[];
   session_summary?: string; // filled only when the token budget is low (see budget.ts)
   tags?: string[]; // vocabulary descriptors for this session (see tags.ts)
+  topics?: string[]; // structural categories this answer is about (see tags.ts)
 };
 
 export type CookSuggestion = {
@@ -88,6 +89,7 @@ export type CookSuggestion = {
   questions: string[];
   session_summary?: string;
   tags?: string[];
+  topics?: string[];
 };
 
 export type BuySuggestion = {
@@ -98,6 +100,7 @@ export type BuySuggestion = {
   questions: string[];
   session_summary?: string;
   tags?: string[];
+  topics?: string[];
 };
 
 export type Turn = { role: "user" | "assistant"; text: string };
@@ -129,6 +132,7 @@ export type ConverseResult = {
   forget_last_purchase?: boolean;
   session_summary?: string;
   tags?: string[];
+  topics?: string[];
 };
 
 const provider = () => getProvider();
