@@ -193,6 +193,7 @@ export async function analyzeBasket(
 export async function suggestCook(input: {
   items?: Item[];
   question?: string;
+  history?: Turn[];
   language?: Lang;
   glossary?: GlossaryEntry[];
   pantry?: PantryItem[];
@@ -203,7 +204,7 @@ export async function suggestCook(input: {
   budgetNote?: string;
   tagsNote?: string;
 }): Promise<CookSuggestion> {
-  const ctx = contextBlock(input.items, input.question);
+  const ctx = contextBlock(input.items, input.question, input.history);
   const messages: ChatMessage[] = [
     { role: "system", content: system("suggest-cook", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock, recipes: input.recipes, equipment: input.equipment, preferences: input.preferences, budgetNote: input.budgetNote, tagsNote: input.tagsNote }) },
     { role: "user", content: ctx },
@@ -215,6 +216,7 @@ export async function suggestCook(input: {
 export async function suggestBuy(input: {
   items?: Item[];
   question?: string;
+  history?: Turn[];
   language?: Lang;
   glossary?: GlossaryEntry[];
   pantry?: PantryItem[];
@@ -222,7 +224,7 @@ export async function suggestBuy(input: {
   budgetNote?: string;
   tagsNote?: string;
 }): Promise<BuySuggestion> {
-  const ctx = contextBlock(input.items, input.question);
+  const ctx = contextBlock(input.items, input.question, input.history);
   const messages: ChatMessage[] = [
     { role: "system", content: system("suggest-buy", { language: input.language, glossary: input.glossary, pantry: input.pantry, restock: input.restock, budgetNote: input.budgetNote, tagsNote: input.tagsNote }) },
     { role: "user", content: ctx },
@@ -298,9 +300,17 @@ export async function classifyMessage(input: {
   return intent === "basket" || intent === "cook" || intent === "buy" ? intent : "chat";
 }
 
-function contextBlock(items?: Item[], question?: string): string {
+function contextBlock(items?: Item[], question?: string, history?: Turn[]): string {
   const parts: string[] = [];
   if (items?.length) parts.push(`Recent items:\n${JSON.stringify(items, null, 2)}`);
+  // Carry the recent dialog so multi-turn buy/cook keeps the target dish and any
+  // "I'm out of X" the user just stated — bounded like converse's window.
+  if (history?.length) {
+    const dialog = windowByBudget(history, 4000)
+      .map((t) => `${t.role}: ${t.text}`)
+      .join("\n");
+    if (dialog) parts.push(`Conversation so far:\n${dialog}`);
+  }
   parts.push(`User question: ${question?.trim() || "(none)"}`);
   return parts.join("\n\n");
 }

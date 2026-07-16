@@ -191,6 +191,7 @@ export async function askFlow(req: Request, res: Response): Promise<void> {
 
   const question: string | undefined = req.body?.question;
   const items: Item[] | undefined = Array.isArray(req.body?.items) ? req.body.items : undefined;
+  const history: Turn[] | undefined = Array.isArray(req.body?.history) ? req.body.history : undefined;
   const forced: string | undefined = req.body?.intent; // optional override from UI buttons
 
   if (!question?.trim() && !forced) {
@@ -215,11 +216,11 @@ export async function askFlow(req: Request, res: Response): Promise<void> {
   try {
     const { result: payload, tokens: spent } = await withUsage(async () => {
       if (intent === "buy") {
-        const result = await suggestBuy({ items, question, language, glossary, pantry, restock, budgetNote, tagsNote });
+        const result = await suggestBuy({ items, question, history, language, glossary, pantry, restock, budgetNote, tagsNote });
         const tags = buildTags(userId, { sessionCategories: itemCats, descriptors: filterDescriptors(result.tags, vocab) });
         return { intent, result, tags, state: stateOf(userId) };
       }
-      const result = await suggestCook({ items, question, language, glossary, pantry, restock, recipes, equipment, preferences, budgetNote, tagsNote });
+      const result = await suggestCook({ items, question, history, language, glossary, pantry, restock, recipes, equipment, preferences, budgetNote, tagsNote });
       const tags = buildTags(userId, { sessionCategories: itemCats, descriptors: filterDescriptors(result.tags, vocab) });
       return { intent: "cook", result, tags, state: stateOf(userId) };
     });
@@ -346,13 +347,13 @@ export async function messageFlow(req: Request, res: Response): Promise<void> {
       }
 
       if (intent === "buy") {
-        const result = await suggestBuy({ items, question: text, language, glossary, pantry, restock, budgetNote, tagsNote });
+        const result = await suggestBuy({ items, question: text, history, language, glossary, pantry, restock, budgetNote, tagsNote });
         const tags = buildTags(userId, { sessionCategories: itemCats, descriptors: filterDescriptors(result.tags, vocab) });
         return { intent: "buy", result, tags, state: stateOf(userId) };
       }
 
       if (intent === "cook") {
-        const result = await suggestCook({ items, question: text, language, glossary, pantry, restock, recipes, equipment, preferences, budgetNote, tagsNote });
+        const result = await suggestCook({ items, question: text, history, language, glossary, pantry, restock, recipes, equipment, preferences, budgetNote, tagsNote });
         const tags = buildTags(userId, { sessionCategories: itemCats, descriptors: filterDescriptors(result.tags, vocab) });
         return { intent: "cook", result, tags, state: stateOf(userId) };
       }
