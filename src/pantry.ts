@@ -40,7 +40,13 @@ export function pantryDirective(pantry?: PantryItem[]): string {
   const missing = items.filter((p) => p.name && p.state === "missing");
   if (!avail.length && !missing.length) return "";
   const lines: string[] = ["", "", "PANTRY (what the user has at home):"];
-  if (confirmed.length) lines.push(`- confirmed at home (high confidence): ${confirmed.map((p) => p.name).join(", ")}`);
+  if (confirmed.length) {
+    const withAge = confirmed.map((p) => {
+      const d = daysAgo(p.updated_at);
+      return d === null ? p.name : `${p.name} (said ~${d} day${d === 1 ? "" : "s"} ago)`;
+    });
+    lines.push(`- confirmed at home (high confidence): ${withAge.join(", ")}`);
+  }
   if (observed.length) {
     const withAge = observed.map((p) => {
       const d = daysAgo(p.updated_at);
@@ -51,10 +57,13 @@ export function pantryDirective(pantry?: PantryItem[]): string {
   if (missing.length) lines.push(`- used up / not at home: ${missing.map((p) => p.name).join(", ")}`);
   lines.push(
     "Use at-home items in dishes and list them under likely_at_home; never put",
-    "them on the buy list. Confirmed items are reliable; for the recently-bought",
-    "ones speak with a little more caution — judge from how many days ago each was",
-    "bought and how perishable it is whether it is likely still good, likely used",
-    "up, or likely spoiled. Do not assume the used-up items are available."
+    "them on the buy list. Judge freshness from how long ago each item was noted",
+    "(see TODAY) and how perishable it is: even a confirmed perishable — fish,",
+    "meat, greens, dairy, ripe produce — stated many days ago may no longer be good,",
+    "so flag it (\"you said you had fish ~6 days ago; unless frozen, it's likely past",
+    "its best\") rather than assuming it's fresh. Long-keeping staples (pasta, rice,",
+    "canned goods) stay reliable. For recently-bought items speak with a little more",
+    "caution. Do not assume the used-up items are available."
   );
   return lines.join("\n");
 }

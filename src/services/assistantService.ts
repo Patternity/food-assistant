@@ -30,6 +30,7 @@ type SystemOpts = {
 // at home) + restock signals — each also keeps learning from what the user states.
 function system(task: string, opts: SystemOpts = {}): string {
   let s = `${persona()}\n\n${loadPrompt(task)}`;
+  s += dateDirective();
   if (opts.language) s += languageDirective(opts.language);
   // State directives describe what's already known; learn hints (always on) tell
   // the model to emit updates. Both are needed — a non-empty directive must not
@@ -131,6 +132,18 @@ export type ConverseResult = {
 };
 
 const provider = () => getProvider();
+
+/**
+ * Ground the model in the current date (server time). Perishability and
+ * seasonality reasoning both need "now": pantry item ages are given relative to
+ * TODAY, and seasonal produce depends on the month.
+ */
+function dateDirective(): string {
+  const now = new Date();
+  const date = now.toISOString().slice(0, 10);
+  const weekday = now.toLocaleDateString("en-US", { weekday: "long" });
+  return `\n\nTODAY: ${date} (${weekday}). Reason about seasonality and how fresh perishable items still are relative to this date.`;
+}
 
 /** Build a user turn that may carry text and an optional image (data URL). */
 function userTurn(text: string, imageDataUrl?: string): ChatMessage {
