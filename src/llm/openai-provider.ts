@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { addUsage } from "../usage.js";
+import { llmConfig } from "../llm-config.js";
 import type {
   ChatMessage,
   CompleteOptions,
@@ -7,43 +8,44 @@ import type {
   LlmProvider,
 } from "./provider.js";
 
-// OpenAI-compatible provider. Auto-connects to whatever LLM_BASE_URL points at,
-// so it works with OpenAI directly or with any compatible aggregator/gateway.
-// A placeholder key lets the server boot and serve the UI without credentials;
-// real calls are gated by isConfigured() in the controller layer.
+// OpenAI-compatible provider. Auto-connects to whatever base URL the config
+// points at, so it works with OpenAI directly or with any compatible gateway.
+// Config is read fresh from llmConfig() (env defaults + runtime admin overrides)
+// so a key/model/endpoint change from the admin panel takes effect without a
+// restart; the OpenAI client is rebuilt only when the key or base URL changes.
 
 export class OpenAiCompatibleProvider implements LlmProvider {
   readonly id = "openai-compatible";
-  private client: OpenAI;
-  private model: string;
-  private visionModel: string;
-  private maxTokens: number;
+  private client: OpenAI | null = null;
+  private signature = "";
 
-  constructor() {
-    this.client = new OpenAI({
-      apiKey: process.env.LLM_API_KEY || "not-configured",
-      baseURL: process.env.LLM_BASE_URL || undefined,
-    });
-    this.model = process.env.LLM_MODEL || "gpt-4o-mini";
-    this.visionModel = process.env.LLM_VISION_MODEL || this.model;
-    // Cap output tokens. Our responses are short JSON; without a cap the model's
-    // full default (e.g. 16384) is requested, which some gateways (OpenRouter
-    // free tier) reject up-front for lack of credit. Overridable via env.
-    this.maxTokens = Number(process.env.LLM_MAX_TOKENS) || 2048;
+  /** Reuse the client while the key/base URL are unchanged; rebuild otherwise. */
+  private clientFor(apiKey: string, baseUrl: string): OpenAI {
+    const signature = `${apiKey}\n${baseUrl}`;
+    if (!this.client || signature !== this.signature) {
+      this.client = new OpenAI({ apiKey: apiKey || "not-configured", baseURL: baseUrl || undefined });
+      this.signature = signature;
+    }
+    return this.client;
   }
 
   isConfigured(): boolean {
-    return Boolean(process.env.LLM_API_KEY);
+    return Boolean(llmConfig().apiKey);
   }
 
   async complete(messages: ChatMessage[], opts: CompleteOptions = {}): Promise<string> {
+    const cfg = llmConfig();
+    const client = this.clientFor(cfg.apiKey, cfg.baseUrl);
     const hasImage = messages.some(
       (m) => Array.isArray(m.content) && m.content.some((p) => p.type === "image")
     );
-    const res = await this.client.chat.completions.create({
-      model: hasImage ? this.visionModel : this.model,
+    const res = await client.chat.completions.create({
+      model: hasImage ? cfg.visionModel : cfg.model,
       temperature: opts.temperature ?? 0.5,
-      max_tokens: this.maxTokens,
+      // Cap output tokens. Our responses are short JSON; without a cap the model's
+      // full default (e.g. 16384) is requested, which some gateways reject up
+      // front for lack of credit.
+      max_tokens: cfg.maxTokens,
       ...(opts.json ? { response_format: { type: "json_object" } } : {}),
       messages: messages.map(toOpenAiMessage),
     });

@@ -12,6 +12,7 @@ import {
 } from "../services/assistantService.js";
 import { buildTags, filterCategories, filterDescriptors, setTagVocabulary, tagsDirective, tagVocabulary } from "../tags.js";
 import { budgetConfig, budgetDirective, budgetHardStopText, dayKey, setBudgetConfig, viewFromUsage, type BudgetView } from "../budget.js";
+import { llmPublicView, setLlmConfig } from "../llm-config.js";
 import { withUsage } from "../usage.js";
 import { detectLanguage, type Lang } from "../lang.js";
 import type { GlossaryEntry } from "../glossary.js";
@@ -417,22 +418,29 @@ export function usageFlow(req: Request, res: Response): void {
 }
 
 /**
- * GET /api/config — the effective budget config (env defaults overridden by any
- * runtime settings). Read-only. Intended for the bot's admin panel to render.
+ * GET /api/config — the effective config (env defaults overridden by any runtime
+ * settings): token budget + LLM connection. The LLM key is masked (never sent).
+ * Read-only. Intended for the bot's admin panel to render.
  */
 export function configFlow(_req: Request, res: Response): void {
-  res.json({ budget: budgetConfig() });
+  res.json({ budget: budgetConfig(), llm: llmPublicView() });
 }
 
 /**
- * PUT /api/config — update budget config at runtime (admin). Accepts a partial
- * body { sessionBudget?, dailyBudget?, warnRatio?, sessionTtlHours? }; only valid
- * fields are applied. Auth is the service token (the bot gates who is an admin).
- * Returns the new effective config.
+ * PUT /api/config — update config at runtime (admin). Accepts flat budget fields
+ * { sessionBudget?, dailyBudget?, warnRatio?, sessionTtlHours? } and an optional
+ * nested { llm: { apiKey?, baseUrl?, model?, visionModel?, maxTokens? } }. Only
+ * valid fields are applied; the LLM key is write-only (blank leaves it). Auth is
+ * the service token (the bot gates who is an admin). Returns the new config.
  */
 export function updateConfigFlow(req: Request, res: Response): void {
   const patch = (req.body ?? {}) as Record<string, unknown>;
-  res.json({ budget: setBudgetConfig(patch) });
+  const budget = setBudgetConfig(patch);
+  const llm =
+    patch.llm && typeof patch.llm === "object"
+      ? setLlmConfig(patch.llm as Record<string, unknown>)
+      : llmPublicView();
+  res.json({ budget, llm });
 }
 
 /**
