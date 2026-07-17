@@ -270,6 +270,9 @@ export async function chatFlow(req: Request, res: Response): Promise<void> {
   try {
     const { result: payload, tokens: spent } = await withUsage(async () => {
       const result = await converse({ items, history, message, language, glossary, pantry, restock, recipes, equipment, preferences, budgetNote, tagsNote });
+      // Reset the whole pantry first (if requested) so items the user says they
+      // still have ("all gone except milk") are re-added by persistLearned below.
+      if (result.forget_pantry) pantryRepo.clear(userId);
       persistLearned(userId, result);
       // The model recognizes a recipe on its own (no button) and dedupes against
       // saved ones; persist it when present. recipesRepo.save upserts by name.
@@ -284,8 +287,6 @@ export async function chatFlow(req: Request, res: Response): Promise<void> {
         const names = purchasesRepo.deleteLast(userId);
         pantryRepo.removeObserved(userId, names);
       }
-      // The user reset the pantry ("all food is gone", "empty the cupboard").
-      if (result.forget_pantry) pantryRepo.clear(userId);
       const tags = buildTags(userId, {
         sessionCategories: filterCategories(result.topics),
         descriptors: filterDescriptors(result.tags, vocab),
@@ -364,6 +365,9 @@ export async function messageFlow(req: Request, res: Response): Promise<void> {
 
       // chat — a follow-up/correction; converse needs the current basket (may be empty)
       const result = await converse({ items: items ?? [], history, message: text, language, glossary, pantry, restock, recipes, equipment, preferences, budgetNote, tagsNote });
+      // Reset the whole pantry first (if requested) so items the user says they
+      // still have ("all gone except milk") are re-added by persistLearned below.
+      if (result.forget_pantry) pantryRepo.clear(userId);
       persistLearned(userId, result);
       if (result.recipe_learned?.name?.trim()) {
         recipesRepo.save(userId, result.recipe_learned, text);
@@ -373,8 +377,6 @@ export async function messageFlow(req: Request, res: Response): Promise<void> {
         const names = purchasesRepo.deleteLast(userId);
         pantryRepo.removeObserved(userId, names);
       }
-      // The user reset the pantry ("all food is gone", "empty the cupboard").
-      if (result.forget_pantry) pantryRepo.clear(userId);
       const tags = buildTags(userId, { sessionCategories: filterCategories(result.topics), descriptors: filterDescriptors(result.tags, vocab) });
       return { intent: "chat", result, tags, state: stateOf(userId) };
     });

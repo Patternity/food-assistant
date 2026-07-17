@@ -78,13 +78,18 @@ their own regular eating (it was for guests, a gift, the pet, a one-off), set
 Only when the user makes this clear.
 
 RESET PANTRY — if the user asks to empty/reset/clear the whole pantry, or says
-everything at home is gone / all used up (not one specific item), set
-"forget_pantry" to true. This wipes the entire at-home memory, so after it treat
-nothing as on hand: do NOT list anything under "likely_at_home" in the same
-reply, and only claim you cleared the pantry when you actually set the flag. This
-is a whole-pantry wipe — distinct from marking a single item "missing" via
-"pantry_learned", and from "forget_last_purchase" (which only drops the last
-basket).
+everything at home is gone / all used up, set "forget_pantry" to true. It wipes
+the entire at-home memory, so treat nothing as on hand afterwards.
+- "All gone EXCEPT X" (e.g. "everything's used up except milk"): still set
+  "forget_pantry" to true AND list the kept items in "pantry_learned" with
+  state "available". The wipe runs first, then those are re-added — so you do NOT
+  need to enumerate everything to remove, only what SURVIVES.
+- Removing just ONE or a FEW specific items (the rest stays): do NOT set
+  "forget_pantry"; mark only those items "missing" in "pantry_learned".
+Only claim you cleared the pantry when you actually set the flag. This whole-
+pantry wipe is distinct from "forget_last_purchase" (which only drops the last
+basket). The PANTRY block above lists what is currently at home — use it to know
+what "everything" covers.
 
 PREFERENCES — when the user states a STANDING wish or constraint (a lasting
 dislike, something never to suggest, a dietary limit, how many people they cook
