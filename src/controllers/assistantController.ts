@@ -12,7 +12,7 @@ import {
 } from "../services/assistantService.js";
 import { buildTags, filterCategories, filterDescriptors, setTagVocabulary, tagsDirective, tagVocabulary } from "../tags.js";
 import { budgetConfig, budgetDirective, budgetHardStopText, dayKey, setBudgetConfig, viewFromUsage, type BudgetView } from "../budget.js";
-import { llmPublicView, setLlmConfig } from "../llm-config.js";
+import { llmConfig, llmPublicView, setLlmConfig } from "../llm-config.js";
 import { withUsage } from "../usage.js";
 import { detectLanguage, type Lang } from "../lang.js";
 import type { GlossaryEntry } from "../glossary.js";
@@ -447,6 +447,38 @@ export function updateConfigFlow(req: Request, res: Response): void {
       ? setLlmConfig(patch.llm as Record<string, unknown>)
       : llmPublicView();
   res.json({ budget, llm });
+}
+
+/**
+ * GET /api/credits — the provider account balance, queried live with the stored
+ * key. Provider-specific: OpenRouter exposes GET {baseUrl}/credits. When the
+ * provider has no such endpoint (e.g. OpenAI) or the key is unset, returns
+ * { supported: false } so the admin can hide the figure gracefully.
+ */
+export async function creditsFlow(_req: Request, res: Response): Promise<void> {
+  const { apiKey, baseUrl } = llmConfig();
+  if (!apiKey) {
+    res.json({ supported: false, reason: "no_key" });
+    return;
+  }
+  const base = (baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
+  try {
+    const r = await fetch(`${base}/credits`, { headers: { Authorization: `Bearer ${apiKey}` } });
+    if (!r.ok) {
+      res.json({ supported: false, status: r.status });
+      return;
+    }
+    const body = (await r.json()) as { data?: { total_credits?: number; total_usage?: number } };
+    const total = Number(body?.data?.total_credits);
+    const usage = Number(body?.data?.total_usage);
+    if (!Number.isFinite(total) || !Number.isFinite(usage)) {
+      res.json({ supported: false });
+      return;
+    }
+    res.json({ supported: true, currency: "USD", total, usage, balance: total - usage });
+  } catch (err) {
+    res.json({ supported: false, error: (err as Error).message });
+  }
 }
 
 /**
