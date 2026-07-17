@@ -130,6 +130,7 @@ export type ConverseResult = {
   equipment_learned?: EquipmentItem[];
   preference_learned?: Preference[];
   forget_last_purchase?: boolean;
+  forget_pantry?: boolean; // user asked to reset the pantry / said all food is gone
   session_summary?: string;
   tags?: string[];
   topics?: string[];

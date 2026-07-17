@@ -40,7 +40,8 @@ omit or leave arrays empty otherwise):
   "recipe_learned": { "name": "string", "method": "string", "equipment": ["string"], "required": ["string"], "helpful": ["string"], "optional": ["string"], "staples": ["string"], "side_dishes": ["string"], "substitutions": ["string"], "notes": "string" },
   "equipment_learned": [ { "name": "string", "state": "has|absent" } ],
   "preference_learned": [ { "text": "string", "kind": "dislike|avoid|diet|household|other" } ],
-  "forget_last_purchase": false
+  "forget_last_purchase": false,
+  "forget_pantry": false
 }
 
 Include "glossary_learned" ONLY when the user's message states or corrects what a
@@ -75,6 +76,15 @@ ATTRIBUTION — if the user reveals that the basket they just showed was NOT for
 their own regular eating (it was for guests, a gift, the pet, a one-off), set
 "forget_last_purchase" to true so it is dropped from their history and pantry.
 Only when the user makes this clear.
+
+RESET PANTRY — if the user asks to empty/reset/clear the whole pantry, or says
+everything at home is gone / all used up (not one specific item), set
+"forget_pantry" to true. This wipes the entire at-home memory, so after it treat
+nothing as on hand: do NOT list anything under "likely_at_home" in the same
+reply, and only claim you cleared the pantry when you actually set the flag. This
+is a whole-pantry wipe — distinct from marking a single item "missing" via
+"pantry_learned", and from "forget_last_purchase" (which only drops the last
+basket).
 
 PREFERENCES — when the user states a STANDING wish or constraint (a lasting
 dislike, something never to suggest, a dietary limit, how many people they cook

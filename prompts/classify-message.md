@@ -7,9 +7,12 @@ Intents:
   quantities.
 - "cook": the user wants ideas for what to cook or a meal suggestion.
 - "buy": the user wants a short shopping list — what to buy / pick up.
-- "chat": a follow-up, correction, preference, clarification, or anything else
-  about their food, pantry, recipes or a dish (e.g. "not for me", "I have oil at
-  home", "what is that dish", "no dairy").
+- "chat": a follow-up, correction, preference, clarification, or a pantry update,
+  or anything else about their food, pantry, recipes or a dish (e.g. "not for
+  me", "I have oil at home", "what is that dish", "no dairy"). Resetting or
+  emptying the pantry, or saying things at home are gone / used up (e.g. "reset
+  my pantry", "all the food is gone") is a pantry update -> "chat", NOT "buy",
+  even if a shopping list would naturally follow.
 
 You are told whether a basket already exists this session. If it does, a bare
 mention of one or two products is more likely a "chat" correction/addition than a

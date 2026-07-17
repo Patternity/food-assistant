@@ -284,6 +284,8 @@ export async function chatFlow(req: Request, res: Response): Promise<void> {
         const names = purchasesRepo.deleteLast(userId);
         pantryRepo.removeObserved(userId, names);
       }
+      // The user reset the pantry ("all food is gone", "empty the cupboard").
+      if (result.forget_pantry) pantryRepo.clear(userId);
       const tags = buildTags(userId, {
         sessionCategories: filterCategories(result.topics),
         descriptors: filterDescriptors(result.tags, vocab),
@@ -371,6 +373,8 @@ export async function messageFlow(req: Request, res: Response): Promise<void> {
         const names = purchasesRepo.deleteLast(userId);
         pantryRepo.removeObserved(userId, names);
       }
+      // The user reset the pantry ("all food is gone", "empty the cupboard").
+      if (result.forget_pantry) pantryRepo.clear(userId);
       const tags = buildTags(userId, { sessionCategories: filterCategories(result.topics), descriptors: filterDescriptors(result.tags, vocab) });
       return { intent: "chat", result, tags, state: stateOf(userId) };
     });

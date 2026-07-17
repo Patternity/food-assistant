@@ -410,6 +410,12 @@ export const pantryRepo = {
     });
     tx();
   },
+
+  /** Wipe the whole at-home memory — the user said everything is gone / asked to
+   *  reset the pantry. Returns the number of rows removed. */
+  clear(userId: number): number {
+    return db.prepare(`DELETE FROM pantry WHERE user_id = ?`).run(userId).changes;
+  },
 };
 
 // --- Glossary (personal term -> canonical product) --------------------------
